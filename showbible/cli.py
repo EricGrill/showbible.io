@@ -1027,7 +1027,7 @@ def _run_dashboard_action(
 def _episode_outputs_tui(screen: "curses.window", vault: Path, episode_id: str) -> str:
     selected = 0
     top_line = 0
-    message = "enter opens, e edits, q returns"
+    message = "browse: e edits, q returns | editor: Ctrl-G/Ctrl-S saves, Esc cancels"
     while True:
         artifacts = list_episode_artifacts(vault, episode_id)
         selected = min(selected, max(0, len(artifacts) - 1))
@@ -1064,7 +1064,7 @@ def _episode_outputs_tui(screen: "curses.window", vault: Path, episode_id: str) 
             top_line += max(1, height - 6)
         elif key in (curses.KEY_PPAGE, ord("K")):
             top_line = max(0, top_line - max(1, height - 6))
-        elif key in (curses.KEY_ENTER, 10, 13, ord("e")) and artifact:
+        elif key in (ord("e"),) and artifact:
             saved = _edit_episode_artifact_tui(screen, vault, episode_id, str(artifact["id"]), str(artifact["content"]))
             message = saved
 
@@ -1082,7 +1082,13 @@ def _edit_episode_artifact_tui(
     buffer_lines = content.splitlines() or [""]
     buffer_lines = buffer_lines[: edit_height - 1]
     screen.erase()
-    screen.addnstr(0, 0, f"Editing {artifact_id} - Ctrl-G saves, Esc cancels", width - 1, curses.A_BOLD)
+    screen.addnstr(
+        0,
+        0,
+        f"Editing {artifact_id} - Ctrl-G/Ctrl-S saves, Esc cancels, q types q",
+        width - 1,
+        curses.A_BOLD,
+    )
     win = curses.newwin(edit_height, edit_width, 2, 1)
     win.keypad(True)
     for index, line in enumerate(buffer_lines):
@@ -1098,6 +1104,8 @@ def _edit_episode_artifact_tui(
 
 
 def _episode_edit_validator(key: int) -> int:
+    if key == 19:
+        return 7
     if key == 27:
         raise KeyboardInterrupt
     return key
