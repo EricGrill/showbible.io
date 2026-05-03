@@ -1,0 +1,10 @@
+.DS_Store
+.env
+.env.*
+.omx/
+.room/
+__pycache__/
+.pytest_cache/
+node_modules/
+dist/
+build/
