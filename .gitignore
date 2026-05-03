@@ -3,6 +3,7 @@
 .env.*
 .omx/
 .room/
+.local/
 .venv/
 __pycache__/
 .pytest_cache/
