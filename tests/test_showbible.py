@@ -107,6 +107,10 @@ def test_cli_smoke_commands(tmp_path: Path, capsys: pytest.CaptureFixture[str]) 
     assert main(["status", "--vault", str(vault)]) == 0
     assert main(["transcript", "--vault", str(vault), "S01E01"]) == 0
     assert main(["lore", "--vault", str(vault)]) == 0
+    assert main(["lore", "explain", "--vault", str(vault)]) == 0
+    assert main(["lore", "paths", "--vault", str(vault)]) == 0
+    assert main(["lore", "add", "--vault", str(vault), "The bridge has a secret door.", "--source", "S01E01"]) == 0
+    assert main(["lore", "show", "--vault", str(vault)]) == 0
     assert main(["arcs", "--vault", str(vault)]) == 0
     assert main(["cost", "--vault", str(vault), "--json"]) == 0
     assert main(["attach", "--vault", str(vault), "--once"]) == 0
@@ -114,6 +118,8 @@ def test_cli_smoke_commands(tmp_path: Path, capsys: pytest.CaptureFixture[str]) 
     output = capsys.readouterr().out
     assert "Initialized ShowBible vault" in output
     assert "Ran S01E01" in output
+    assert "The bridge has a secret door." in output
+    assert "lore-bible/canon.md" in output
     assert "Doctor clean" in output
     assert "ShowBible" not in output or "S01E01" in output
 
@@ -304,10 +310,12 @@ def test_help_topics_are_detailed(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["help", "cast"]) == 0
     assert main(["help", "roles"]) == 0
     assert main(["help", "tui"]) == 0
+    assert main(["help", "lore"]) == 0
 
     output = capsys.readouterr().out
     assert "showbible cast suggest --pick" in output
     assert "lore-keeper" in output
+    assert "showbible lore add" in output
     assert "space" in output
 
 

@@ -117,6 +117,24 @@ Keys:
   a                select all
   q                cancel
 """,
+    "lore": """Lore workflow
+
+Lore starts as markdown files in the vault:
+  lore-bible/canon.md
+  lore-bible/glossary.md
+  lore-bible/relationships.md
+  arcs/*.md
+
+Episode runs append continuity-check output to canon.md. Manual facts can be
+added from the CLI:
+  showbible lore
+  showbible lore explain
+  showbible lore paths
+  showbible lore add "Tony owes Junior a debt" --source S01E01
+
+Current v0 behavior is append-only canon. Future review/TUI flows should split
+proposed lore from accepted canon before writing.
+""",
 }
 
 
@@ -125,7 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
 
     help_cmd = sub.add_parser("help", help="show detailed workflow help")
-    help_cmd.add_argument("topic", nargs="?", choices=["cast", "episodes", "roles", "ai", "tui"])
+    help_cmd.add_argument("topic", nargs="?", choices=["cast", "episodes", "roles", "ai", "tui", "lore"])
     help_cmd.set_defaults(func=cmd_help)
 
     init = sub.add_parser("init", help="scaffold a ShowBible vault")
@@ -180,8 +198,23 @@ def build_parser() -> argparse.ArgumentParser:
     transcript.add_argument("episode", nargs="?")
     transcript.set_defaults(func=cmd_transcript)
 
-    lore = sub.add_parser("lore", help="print canon lore")
+    lore = sub.add_parser("lore", help="inspect and administer lore")
     add_vault_flag(lore)
+    lore_sub = lore.add_subparsers(dest="lore_command")
+    lore_show = lore_sub.add_parser("show", help="print canon lore")
+    add_vault_flag(lore_show)
+    lore_show.set_defaults(func=cmd_lore_show)
+    lore_explain = lore_sub.add_parser("explain", help="explain how lore is created")
+    add_vault_flag(lore_explain)
+    lore_explain.set_defaults(func=cmd_lore_explain)
+    lore_add = lore_sub.add_parser("add", help="append a canon fact")
+    add_vault_flag(lore_add)
+    lore_add.add_argument("fact")
+    lore_add.add_argument("--source", default="manual")
+    lore_add.set_defaults(func=cmd_lore_add)
+    lore_paths = lore_sub.add_parser("paths", help="show lore files")
+    add_vault_flag(lore_paths)
+    lore_paths.set_defaults(func=cmd_lore_paths)
     lore.set_defaults(func=cmd_lore)
 
     arcs = sub.add_parser("arcs", help="list arcs")
@@ -373,8 +406,42 @@ def cmd_transcript(args: argparse.Namespace) -> int:
 
 
 def cmd_lore(args: argparse.Namespace) -> int:
+    if getattr(args, "lore_command", None):
+        return int(args.func(args) or 0)
+    return cmd_lore_show(args)
+
+
+def cmd_lore_show(args: argparse.Namespace) -> int:
     vault = resolve_vault(args.vault)
     print((vault / "lore-bible" / "canon.md").read_text(encoding="utf-8").rstrip())
+    return 0
+
+
+def cmd_lore_explain(args: argparse.Namespace) -> int:
+    print(HELP_TOPICS["lore"].strip())
+    return 0
+
+
+def cmd_lore_add(args: argparse.Namespace) -> int:
+    vault = resolve_vault(args.vault)
+    canon = vault / "lore-bible" / "canon.md"
+    existing = canon.read_text(encoding="utf-8") if canon.exists() else "# Canon\n\n## Facts\n\n"
+    entry = f"\n- **Manual fact** - {args.fact.strip()} *Source: {args.source}*\n"
+    atomic_write_text(canon, existing.rstrip() + entry)
+    print(f"Added lore fact to {canon}")
+    return 0
+
+
+def cmd_lore_paths(args: argparse.Namespace) -> int:
+    vault = resolve_vault(args.vault)
+    paths = [
+        vault / "lore-bible" / "canon.md",
+        vault / "lore-bible" / "glossary.md",
+        vault / "lore-bible" / "relationships.md",
+        vault / "arcs",
+    ]
+    for path in paths:
+        print(path)
     return 0
 
 

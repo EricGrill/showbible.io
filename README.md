@@ -66,6 +66,7 @@ showbible help
 showbible help cast
 showbible help episodes
 showbible help roles
+showbible help lore
 showbible cast kinds
 showbible episode show S01E01
 ```
@@ -73,3 +74,12 @@ showbible episode show S01E01
 `showbible cast suggest` excludes the current effective cast. In a real terminal
 it opens a picker; use `--json` for scripts, or `--apply` to accept all returned
 suggestions.
+
+Lore is markdown-first:
+
+```bash
+showbible lore
+showbible lore explain
+showbible lore paths
+showbible lore add "Tony owes Junior a debt" --source S01E01
+```
