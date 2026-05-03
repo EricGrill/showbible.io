@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import curses
+import io
 import json
 import os
 import re
@@ -123,9 +125,13 @@ Environment overrides:
 """,
     "tui": """Terminal UI
 
-Use the guided workflow TUI to move through the minimum setup:
+Use the guided workflow TUI as a persistent show dashboard:
   showbible tui
   showbible workflow
+
+It stays open until you press q. The dashboard can create/select episodes,
+add show or episode cast, apply AI cast suggestions, add arc beats, add lore
+facts, run the selected episode, and run doctor.
 
 Cast suggestions also use a TUI automatically when stdout/stdin are real terminals.
 You can force cast picking with:
@@ -134,6 +140,7 @@ You can force cast picking with:
 Keys:
   up/down or k/j   move
   enter            run command / apply
+  [ and ]          switch selected episode
   space            toggle selection in pickers
   a                select all in pickers
   q                cancel
@@ -165,7 +172,8 @@ Minimum path for a first episode:
 
 The workflow creates the episode folder if needed, shows current cast, shows
 episode-relevant arcs, and offers the next commands. In a real terminal it opens
-a TUI menu; in noninteractive shells it prints the same minimum checklist.
+a persistent dashboard; in noninteractive shells it prints the same minimum
+checklist.
 """,
 }
 
@@ -689,109 +697,197 @@ def _format_current_cast(vault: Path, episode_id: str | None = None) -> str:
 
 
 def _print_workflow_snapshot(vault: Path, episode_id: str, provider: str) -> None:
-    print(f"ShowBible workflow for {episode_id}")
-    print("")
-    print("Minimum needed:")
-    print(f"  [x] Vault: {vault}")
-    print(f"  [x] Episode folder: {ensure_episode(vault, episode_id)}")
-    print(f"  [x] Current cast visible: showbible cast list --episode {episode_id}")
-    print(f"  [x] Current arcs visible: showbible arcs current --episode {episode_id}")
-    print("")
-    print(_format_current_cast(vault, episode_id).rstrip())
-    print("")
-    print(_format_current_arcs(vault, episode_id).rstrip())
-    print("")
-    print("Next commands:")
-    print("  showbible cast suggest --pick")
-    print(f"  showbible cast suggest --episode {episode_id} --pick")
-    print(f"  showbible arcs add \"Pilot tests the season theme\" --episode {episode_id}")
-    print(f"  showbible run --episode {episode_id} --provider {provider}")
+    print(_workflow_snapshot_text(vault, episode_id, provider).rstrip())
+
+
+def _workflow_snapshot_text(vault: Path, episode_id: str, provider: str) -> str:
+    return "\n".join(
+        [
+            f"ShowBible workflow for {episode_id}",
+            "",
+            "Minimum needed:",
+            f"  [x] Vault: {vault}",
+            f"  [x] Episode folder: {ensure_episode(vault, episode_id)}",
+            f"  [x] Current cast visible: showbible cast list --episode {episode_id}",
+            f"  [x] Current arcs visible: showbible arcs current --episode {episode_id}",
+            "",
+            _format_current_cast(vault, episode_id).rstrip(),
+            "",
+            _format_current_arcs(vault, episode_id).rstrip(),
+            "",
+            "Next commands:",
+            "  showbible tui",
+            "  showbible cast suggest --pick",
+            f"  showbible cast suggest --episode {episode_id} --pick",
+            f"  showbible arcs add \"Pilot tests the season theme\" --episode {episode_id}",
+            f"  showbible run --episode {episode_id} --provider {provider}",
+            "",
+        ]
+    )
 
 
 def _workflow_tui(vault: Path, episode_id: str, provider: str) -> int:
-    actions = [
-        ("Show minimum workflow snapshot", "snapshot"),
-        ("Suggest show cast", "suggest-show"),
-        (f"Suggest {episode_id} cast overrides", "suggest-episode"),
-        (f"Add starter arc beat for {episode_id}", "arc"),
-        (f"Run {episode_id}", "run"),
-        ("Quit", "quit"),
-    ]
-    selected = 0
+    state = {"episode_id": episode_id, "message": "Dashboard ready. Press q when you are done."}
 
-    def draw(screen: "curses.window") -> str:
-        nonlocal selected
+    def draw(screen: "curses.window") -> int:
+        selected = 0
         curses.curs_set(0)
         screen.keypad(True)
         while True:
+            actions = _dashboard_actions(state["episode_id"])
+            selected = min(selected, len(actions) - 1)
             screen.erase()
             height, width = screen.getmaxyx()
-            screen.addnstr(0, 0, f"ShowBible workflow - {episode_id}", width - 1, curses.A_BOLD)
-            screen.addnstr(1, 0, "up/down or k/j move  enter run  q quit", width - 1)
-            preview = [
-                f"vault: {vault}",
-                f"episodes: {', '.join(list_episodes(vault)) or 'none'}",
-                f"cast roles: {len(effective_cast_roles(vault, episode_id))}",
-            ]
-            for index, line in enumerate(preview[: max(0, height - 10)]):
-                screen.addnstr(3 + index, 0, line, width - 1)
-            start = 7
-            for index, (label, _action) in enumerate(actions[: max(0, height - start - 1)]):
+            menu_width = max(28, min(42, width // 3))
+            screen.addnstr(0, 0, f"ShowBible dashboard - {vault.name}", width - 1, curses.A_BOLD)
+            screen.addnstr(1, 0, "enter run  [/] episode  r refresh  q quit", width - 1)
+            for index, (label, _action) in enumerate(actions[: max(0, height - 4)]):
                 attr = curses.A_REVERSE if index == selected else curses.A_NORMAL
-                screen.addnstr(start + index, 0, label, width - 1, attr)
+                screen.addnstr(index + 3, 0, label, menu_width - 1, attr)
+            panel_x = min(menu_width + 2, width - 1)
+            panel_width = max(1, width - panel_x)
+            for index, line in enumerate(_dashboard_panel_lines(vault, state["episode_id"], state["message"])):
+                if index + 3 >= height:
+                    break
+                attr = curses.A_BOLD if line.endswith(":") else curses.A_NORMAL
+                screen.addnstr(index + 3, panel_x, line, panel_width - 1, attr)
             key = screen.getch()
             if key in (ord("q"), 27):
-                return "quit"
+                return 0
+            if key == ord("r"):
+                state["message"] = "Refreshed."
+                continue
+            if key == ord("["):
+                state["episode_id"] = _adjacent_episode(vault, state["episode_id"], -1)
+                _write_room_state(vault, "planning", episode_id=state["episode_id"])
+                state["message"] = f"Selected {state['episode_id']}."
+                continue
+            if key == ord("]"):
+                state["episode_id"] = _adjacent_episode(vault, state["episode_id"], 1)
+                _write_room_state(vault, "planning", episode_id=state["episode_id"])
+                state["message"] = f"Selected {state['episode_id']}."
+                continue
             if key in (curses.KEY_DOWN, ord("j")):
                 selected = min(len(actions) - 1, selected + 1)
             elif key in (curses.KEY_UP, ord("k")):
                 selected = max(0, selected - 1)
             elif key in (curses.KEY_ENTER, 10, 13):
-                return actions[selected][1]
+                action = actions[selected][1]
+                if action == "quit":
+                    return 0
+                state["episode_id"], state["message"] = _run_dashboard_action(
+                    vault,
+                    state["episode_id"],
+                    action,
+                    provider,
+                    prompt=lambda label, default="": _prompt_dashboard_line(screen, label, default),
+                )
+        return 0
 
-    action = curses.wrapper(draw)
+    return curses.wrapper(draw)
+
+
+def _dashboard_actions(episode_id: str) -> list[tuple[str, str]]:
+    return [
+        ("Show snapshot", "snapshot"),
+        ("Create/select episode", "episode-select"),
+        ("Create next episode", "episode-next-new"),
+        ("Add show cast", "cast-show-add"),
+        (f"Add {episode_id} cast override", "cast-episode-add"),
+        ("AI suggest show cast (apply)", "suggest-show-apply"),
+        (f"AI suggest {episode_id} cast (apply)", "suggest-episode-apply"),
+        (f"Add {episode_id} arc beat", "arc-add"),
+        (f"Add {episode_id} lore fact", "lore-add"),
+        (f"Run {episode_id}", "run"),
+        ("Doctor", "doctor"),
+        ("Quit", "quit"),
+    ]
+
+
+def _run_dashboard_action(
+    vault: Path,
+    episode_id: str,
+    action: str,
+    provider: str,
+    prompt: object | None = None,
+) -> tuple[str, str]:
     if action == "snapshot":
-        _print_workflow_snapshot(vault, episode_id, provider)
-    elif action == "suggest-show":
-        return cmd_cast_suggest(
+        return episode_id, _workflow_snapshot_text(vault, episode_id, provider)
+    if action == "episode-select":
+        selected = _dashboard_prompt(prompt, "Episode id", episode_id) or episode_id
+        ensure_episode(vault, selected)
+        _write_room_state(vault, "planning", episode_id=selected)
+        return selected, f"Selected episode {selected}."
+    if action == "episode-next-new":
+        selected = _next_episode_id(list_episodes(vault))
+        ensure_episode(vault, selected)
+        _write_room_state(vault, "planning", episode_id=selected)
+        return selected, f"Created and selected {selected}."
+    if action in {"cast-show-add", "cast-episode-add"}:
+        display = _dashboard_prompt(prompt, "Display name", "")
+        if not display:
+            return episode_id, "Cancelled: display name is required."
+        kind = _dashboard_prompt(prompt, "Kind", "actor") or "actor"
+        plays = _dashboard_prompt(prompt, "Plays/character slug", "") or None
+        slug = slugify(display)
+        write_person(vault, slug, display, kind, plays)
+        role = CastRole(kind=kind, person=slug, plays=plays)
+        if action == "cast-episode-add":
+            add_episode_cast_role(vault, episode_id, role)
+            return episode_id, f"Added {kind} {display} to episode {episode_id}."
+        add_cast_role(vault, role)
+        return episode_id, f"Added show {kind} {display}."
+    if action == "suggest-show-apply":
+        output = _capture_cli_output(
+            cmd_cast_suggest,
             argparse.Namespace(
                 vault=str(vault),
                 episode=None,
                 show=None,
                 provider=provider,
                 limit=6,
-                apply=False,
-                pick=True,
+                apply=True,
+                pick=False,
                 json=False,
-                show_name=None,
-            )
+            ),
         )
-    elif action == "suggest-episode":
-        return cmd_cast_suggest(
+        return episode_id, output or "Applied show cast suggestions."
+    if action == "suggest-episode-apply":
+        output = _capture_cli_output(
+            cmd_cast_suggest,
             argparse.Namespace(
                 vault=str(vault),
                 episode=episode_id,
-                show=None,
+                show=False,
                 provider=provider,
                 limit=6,
-                apply=False,
-                pick=True,
+                apply=True,
+                pick=False,
                 json=False,
-                show_name=None,
-            )
+            ),
         )
-    elif action == "arc":
-        return cmd_arcs_add(
-            argparse.Namespace(
-                vault=str(vault),
-                episode=episode_id,
-                arc="season-theme",
-                status="planned",
-                beat="Pilot tests the season theme.",
-            )
+        return episode_id, output or f"Applied {episode_id} cast suggestions."
+    if action == "arc-add":
+        beat = _dashboard_prompt(prompt, "Arc beat", "Pilot tests the season theme.")
+        if not beat:
+            return episode_id, "Cancelled: arc beat is required."
+        output = _capture_cli_output(
+            cmd_arcs_add,
+            argparse.Namespace(vault=str(vault), episode=episode_id, arc="season-theme", status="planned", beat=beat),
         )
-    elif action == "run":
-        return cmd_run(
+        return episode_id, output
+    if action == "lore-add":
+        fact = _dashboard_prompt(prompt, "Lore fact", "")
+        if not fact:
+            return episode_id, "Cancelled: lore fact is required."
+        output = _capture_cli_output(
+            cmd_lore_add,
+            argparse.Namespace(vault=str(vault), fact=fact, source=episode_id),
+        )
+        return episode_id, output
+    if action == "run":
+        output = _capture_cli_output(
+            cmd_run,
             argparse.Namespace(
                 vault=str(vault),
                 episode=episode_id,
@@ -800,9 +896,106 @@ def _workflow_tui(vault: Path, episode_id: str, provider: str) -> int:
                 note=[],
                 speak_as=[],
                 keep_going=False,
-            )
+            ),
         )
-    return 0
+        return episode_id, output
+    if action == "doctor":
+        findings = doctor(vault)
+        if not findings:
+            return episode_id, "Doctor clean."
+        return episode_id, "\n".join(f"{item.level}: {item.path}: {item.message}" for item in findings)
+    return episode_id, "No action."
+
+
+def _dashboard_prompt(prompt: object | None, label: str, default: str = "") -> str | None:
+    if prompt is None:
+        return default
+    value = prompt(label, default)  # type: ignore[operator]
+    if value is None:
+        return None
+    return str(value).strip() or default
+
+
+def _capture_cli_output(func: object, args: argparse.Namespace) -> str:
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        func(args)  # type: ignore[operator]
+    return buffer.getvalue().strip()
+
+
+def _prompt_dashboard_line(screen: "curses.window", label: str, default: str = "") -> str | None:
+    height, width = screen.getmaxyx()
+    prompt = f"{label}"
+    if default:
+        prompt += f" [{default}]"
+    prompt += ": "
+    screen.move(max(0, height - 2), 0)
+    screen.clrtoeol()
+    screen.addnstr(max(0, height - 2), 0, prompt, width - 1, curses.A_BOLD)
+    screen.move(max(0, height - 1), 0)
+    screen.clrtoeol()
+    curses.echo()
+    try:
+        raw = screen.getstr(max(0, height - 1), 0, max(1, width - 1))
+    finally:
+        curses.noecho()
+    value = raw.decode("utf-8", errors="ignore").strip()
+    return value or default
+
+
+def _dashboard_panel_lines(vault: Path, episode_id: str, message: str) -> list[str]:
+    ensure_episode(vault, episode_id)
+    meta = read_json(vault / "episodes" / episode_id / "meta.json", {})
+    episodes = list_episodes(vault)
+    costs = read_json(vault / ".room" / "costs.json", {})
+    findings = doctor(vault)
+    lines = [
+        "Show:",
+        f"Vault: {vault}",
+        f"Episodes: {', '.join(episodes) or 'none'}",
+        f"Selected: {episode_id} ({meta.get('status', 'created')})",
+        f"Completed phases: {len(meta.get('completed_phases', []))}",
+        f"Cost: {costs.get('total_tokens', 0)} token(s), ${costs.get('total_dollars', 0.0):.4f}",
+        f"Doctor: {'clean' if not findings else str(len(findings)) + ' finding(s)'}",
+        "",
+        "Current Cast:",
+    ]
+    roles = effective_cast_roles(vault, episode_id)
+    people_by_slug = {person["slug"]: person for person in people(vault)}
+    if roles:
+        for role in roles[:8]:
+            display = people_by_slug.get(role.person, {}).get("display_name", role.person)
+            plays = f" as {role.plays}" if role.plays else ""
+            lines.append(f"- {role.kind}: {display}{plays}")
+        if len(roles) > 8:
+            lines.append(f"- ... {len(roles) - 8} more")
+    else:
+        lines.append("- no cast roles set")
+    lines.extend(["", "Current Arcs:"])
+    lines.extend(_format_current_arcs(vault, episode_id).strip().splitlines()[1:8])
+    lines.extend(["", "Last Action:"])
+    lines.extend((message or "No action yet.").splitlines()[:10])
+    return lines
+
+
+def _next_episode_id(episodes: list[str]) -> str:
+    numbers = []
+    for episode in episodes:
+        match = re.match(r"^S01E(\d+)$", episode)
+        if match:
+            numbers.append(int(match.group(1)))
+    return f"S01E{(max(numbers) + 1 if numbers else 1):02d}"
+
+
+def _adjacent_episode(vault: Path, episode_id: str, direction: int) -> str:
+    episodes = list_episodes(vault)
+    if not episodes:
+        ensure_episode(vault, episode_id)
+        return episode_id
+    if episode_id not in episodes:
+        return episodes[0]
+    index = episodes.index(episode_id)
+    return episodes[(index + direction) % len(episodes)]
 
 
 def cmd_cost(args: argparse.Namespace) -> int:

@@ -36,19 +36,22 @@ python3 -m venv .venv
 .venv/bin/showbible attach --vault /tmp/showbible-demo --once
 ```
 
-## CLI-Only Cast Workflow
+## CLI-Only Show Dashboard
 
-For the minimum first-episode path, let the CLI make the checklist explicit:
+For the minimum first-episode path, start the persistent dashboard:
 
 ```bash
 cd /tmp/showbible-demo
-showbible workflow --episode S01E01
 showbible tui --episode S01E01
 ```
 
-The workflow creates `episodes/S01E01` if needed, shows the current effective
-cast, shows episode-relevant arcs, and prints the next commands for cast
-suggestions, arc beats, and running the episode.
+The dashboard stays open until you press `q`. From there you can create or
+select episodes, add show-level cast, add episode cast overrides, apply AI cast
+suggestions, add arc beats, add lore facts, run the selected episode, and run
+doctor. `showbible workflow --episode S01E01 --no-tui` prints the same minimum
+checklist for scripts and noninteractive shells.
+
+The lower-level commands are still available when you want direct CLI control:
 
 ```bash
 cd /tmp/showbible-demo

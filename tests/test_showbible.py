@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from showbible.cli import main
+from showbible.cli import _run_dashboard_action, main
 from showbible.engine import PHASES, _phase_prompt, run_episode
 from showbible.providers import LMStudioProvider, ProviderError, resolve_provider
 from showbible.server import make_server, serve, status_payload, transcript_text
@@ -209,6 +209,89 @@ def test_arcs_follow_current_episode_folder(tmp_path: Path, monkeypatch: pytest.
     assert "S01E07 [planned]" in output
     assert "Current arcs for S01E07" in output
     assert "hidden debt" in (vault / "arcs" / "season-theme.md").read_text(encoding="utf-8")
+
+
+def test_dashboard_actions_construct_show_without_leaving_workflow(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "demo")
+    episode_id = "S01E01"
+
+    values = iter(["S01E03"])
+    episode_id, message = _run_dashboard_action(
+        vault,
+        episode_id,
+        "episode-select",
+        "mock",
+        prompt=lambda label, default="": next(values),
+    )
+
+    assert episode_id == "S01E03"
+    assert "Selected episode S01E03" in message
+    assert (vault / "episodes" / "S01E03" / "meta.json").is_file()
+
+    values = iter(["Room Doctor", "writer", ""])
+    episode_id, message = _run_dashboard_action(
+        vault,
+        episode_id,
+        "cast-show-add",
+        "mock",
+        prompt=lambda label, default="": next(values),
+    )
+
+    assert "Added show writer Room Doctor" in message
+    assert "room-doctor" in {role.person for role in cast_roles(vault)}
+
+    values = iter(["Guest Actor", "actor", "guest-character"])
+    episode_id, message = _run_dashboard_action(
+        vault,
+        episode_id,
+        "cast-episode-add",
+        "mock",
+        prompt=lambda label, default="": next(values),
+    )
+
+    assert "episode S01E03" in message
+    assert {"kind": "actor", "person": "guest-actor", "plays": "guest-character"} in read_json(
+        vault / "episodes" / "S01E03" / "meta.json", {}
+    )["cast_overrides"]
+
+    values = iter(["The third episode turns the season argument inside out."])
+    episode_id, message = _run_dashboard_action(
+        vault,
+        episode_id,
+        "arc-add",
+        "mock",
+        prompt=lambda label, default="": next(values),
+    )
+
+    assert "Added arc beat" in message
+    assert "S01E03 [planned] The third episode" in (vault / "arcs" / "season-theme.md").read_text(encoding="utf-8")
+
+    values = iter(["The guest character knows the missing fact."])
+    episode_id, message = _run_dashboard_action(
+        vault,
+        episode_id,
+        "lore-add",
+        "mock",
+        prompt=lambda label, default="": next(values),
+    )
+
+    assert "Added lore fact" in message
+    assert "The guest character knows" in (vault / "lore-bible" / "canon.md").read_text(encoding="utf-8")
+
+    episode_id, message = _run_dashboard_action(vault, episode_id, "suggest-show-apply", "mock")
+
+    assert "Applied" in message
+    assert "lead-actor" in {role.person for role in cast_roles(vault)}
+
+    episode_id, message = _run_dashboard_action(vault, episode_id, "run", "mock")
+
+    assert "Ran S01E03" in message
+    assert read_json(vault / "episodes" / "S01E03" / "meta.json", {})["status"] == "done"
+
+    episode_id, message = _run_dashboard_action(vault, episode_id, "doctor", "mock")
+
+    assert episode_id == "S01E03"
+    assert message == "Doctor clean."
 
 
 def test_cast_scope_follows_current_episode_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
