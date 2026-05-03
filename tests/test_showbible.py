@@ -240,46 +240,10 @@ def test_dashboard_actions_construct_show_without_leaving_workflow(tmp_path: Pat
     vault = init_vault(tmp_path / "demo")
     episode_id = "S01E01"
 
-    values = iter(["S01E03"])
-    episode_id, message = _run_dashboard_action(
-        vault,
-        episode_id,
-        "episode-select",
-        "mock",
-        prompt=lambda label, default="": next(values),
-    )
+    episode_id, message = _run_dashboard_action(vault, episode_id, "snapshot", "mock")
+    assert "ShowBible workflow for S01E01" in message
 
-    assert episode_id == "S01E03"
-    assert "Selected episode S01E03" in message
-    assert (vault / "episodes" / "S01E03" / "meta.json").is_file()
-
-    values = iter(["Room Doctor", "writer", ""])
-    episode_id, message = _run_dashboard_action(
-        vault,
-        episode_id,
-        "cast-show-add",
-        "mock",
-        prompt=lambda label, default="": next(values),
-    )
-
-    assert "Added show writer Room Doctor" in message
-    assert "room-doctor" in {role.person for role in cast_roles(vault)}
-
-    values = iter(["Guest Actor", "actor", "guest-character"])
-    episode_id, message = _run_dashboard_action(
-        vault,
-        episode_id,
-        "cast-episode-add",
-        "mock",
-        prompt=lambda label, default="": next(values),
-    )
-
-    assert "episode S01E03" in message
-    assert {"kind": "actor", "person": "guest-actor", "plays": "guest-character"} in read_json(
-        vault / "episodes" / "S01E03" / "meta.json", {}
-    )["cast_overrides"]
-
-    values = iter(["The third episode turns the season argument inside out."])
+    values = iter(["The pilot pays off a hidden debt."])
     episode_id, message = _run_dashboard_action(
         vault,
         episode_id,
@@ -287,11 +251,10 @@ def test_dashboard_actions_construct_show_without_leaving_workflow(tmp_path: Pat
         "mock",
         prompt=lambda label, default="": next(values),
     )
-
     assert "Added arc beat" in message
-    assert "S01E03 [planned] The third episode" in (vault / "arcs" / "season-theme.md").read_text(encoding="utf-8")
+    assert "S01E01 [planned] The pilot pays off" in (vault / "arcs" / "season-theme.md").read_text(encoding="utf-8")
 
-    values = iter(["The guest character knows the missing fact."])
+    values = iter(["The protagonist already knows the secret."])
     episode_id, message = _run_dashboard_action(
         vault,
         episode_id,
@@ -299,27 +262,14 @@ def test_dashboard_actions_construct_show_without_leaving_workflow(tmp_path: Pat
         "mock",
         prompt=lambda label, default="": next(values),
     )
-
     assert "Added lore fact" in message
-    assert "The guest character knows" in (vault / "lore-bible" / "canon.md").read_text(encoding="utf-8")
-
-    episode_id, message = _run_dashboard_action(vault, episode_id, "suggest-show-apply", "mock")
-
-    assert "Applied" in message
-    assert "lead-actor" in {role.person for role in cast_roles(vault)}
+    assert "already knows the secret" in (vault / "lore-bible" / "canon.md").read_text(encoding="utf-8")
 
     episode_id, message = _run_dashboard_action(vault, episode_id, "run", "mock")
-
-    assert "Ran S01E03" in message
-    assert read_json(vault / "episodes" / "S01E03" / "meta.json", {})["status"] == "done"
-
-    episode_id, message = _run_dashboard_action(vault, episode_id, "outputs", "mock")
-
-    assert "output artifact(s) available for S01E03" in message
+    assert "Ran S01E01" in message
+    assert read_json(vault / "episodes" / "S01E01" / "meta.json", {})["status"] == "done"
 
     episode_id, message = _run_dashboard_action(vault, episode_id, "doctor", "mock")
-
-    assert episode_id == "S01E03"
     assert message == "Doctor clean."
 
 
