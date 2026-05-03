@@ -3,17 +3,21 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 from .engine import run_episode
-from .providers import ProviderError
+from .providers import ProviderError, resolve_provider
 from .server import serve, status_payload, transcript_text
 from .vault import (
     VaultError,
+    CastRole,
+    add_cast_role,
     atomic_write_json,
     atomic_write_text,
+    cast_roles,
     copy_episode,
     doctor,
     ensure_episode,
@@ -21,8 +25,10 @@ from .vault import (
     list_episodes,
     people,
     read_json,
+    remove_cast_role,
     resolve_vault,
     slugify,
+    write_person,
 )
 
 EXIT_GENERIC = 1
@@ -119,9 +125,32 @@ def build_parser() -> argparse.ArgumentParser:
     add_vault_flag(pack_export)
     pack_export.set_defaults(func=cmd_pack_export)
 
-    cast = sub.add_parser("cast", help="inspect or auto-select cast")
+    cast = sub.add_parser("cast", help="inspect, set, or AI-suggest cast")
     add_vault_flag(cast)
-    cast.add_argument("--auto", action="store_true")
+    cast.add_argument("--auto", action="store_true", help="show the current auto-selected cast")
+    cast_sub = cast.add_subparsers(dest="cast_command")
+    cast_list = cast_sub.add_parser("list")
+    add_vault_flag(cast_list)
+    cast_list.set_defaults(func=cmd_cast_list)
+    cast_add = cast_sub.add_parser("add")
+    add_vault_flag(cast_add)
+    cast_add.add_argument("display_name")
+    cast_add.add_argument("--person", help="person slug; defaults from display name")
+    cast_add.add_argument("--kind", default="actor", help="showrunner, director, writer, actor, lore-keeper")
+    cast_add.add_argument("--plays", help="character slug for actor roles")
+    cast_add.set_defaults(func=cmd_cast_add)
+    cast_remove = cast_sub.add_parser("remove")
+    add_vault_flag(cast_remove)
+    cast_remove.add_argument("person_slug")
+    cast_remove.set_defaults(func=cmd_cast_remove)
+    cast_suggest = cast_sub.add_parser("suggest")
+    add_vault_flag(cast_suggest)
+    cast_suggest.add_argument("show")
+    cast_suggest.add_argument("--provider", default="lmstudio")
+    cast_suggest.add_argument("--limit", type=int, default=6)
+    cast_suggest.add_argument("--apply", action="store_true", help="write suggested people and roles into the vault")
+    cast_suggest.add_argument("--json", action="store_true", help="print parsed suggestions as JSON")
+    cast_suggest.set_defaults(func=cmd_cast_suggest)
     cast.set_defaults(func=cmd_cast)
 
     episode = sub.add_parser("episode", help="episode lifecycle")
@@ -290,13 +319,111 @@ def cmd_pack_export(args: argparse.Namespace) -> int:
 
 
 def cmd_cast(args: argparse.Namespace) -> int:
+    if getattr(args, "cast_command", None):
+        return int(args.func(args) or 0)
+    return cmd_cast_list(args)
+
+
+def cmd_cast_list(args: argparse.Namespace) -> int:
     vault = resolve_vault(args.vault)
-    cast = people(vault)
-    if args.auto:
-        print("Auto cast selected:")
-    for person in cast:
-        print(f"{person['slug']}: {person['display_name']}")
+    people_by_slug = {person["slug"]: person for person in people(vault)}
+    roles = cast_roles(vault)
+    if getattr(args, "auto", False):
+        print("Auto/current cast:")
+    if not roles:
+        print("No cast roles set.")
+        return 0
+    for role in roles:
+        display = people_by_slug.get(role.person, {}).get("display_name", role.person)
+        plays = f" as {role.plays}" if role.plays else ""
+        print(f"{role.kind}: {role.person} ({display}){plays}")
     return 0
+
+
+def cmd_cast_add(args: argparse.Namespace) -> int:
+    vault = resolve_vault(args.vault)
+    slug = args.person or slugify(args.display_name)
+    write_person(vault, slug, args.display_name, args.kind, args.plays)
+    add_cast_role(vault, CastRole(kind=args.kind, person=slug, plays=args.plays))
+    print(f"Added {args.kind}: {slug} ({args.display_name})")
+    return 0
+
+
+def cmd_cast_remove(args: argparse.Namespace) -> int:
+    vault = resolve_vault(args.vault)
+    remove_cast_role(vault, args.person_slug)
+    print(f"Removed cast role: {args.person_slug}")
+    return 0
+
+
+def cmd_cast_suggest(args: argparse.Namespace) -> int:
+    vault = resolve_vault(args.vault)
+    pack = (vault / "pack.yaml").read_text(encoding="utf-8")
+    prompt = (
+        f"Suggest a compact writers-room cast for {args.show}. Use real public people associated with the show "
+        "when you know them: creators, showrunners, directors, writers, and actors. "
+        "Do not invent generic labels like Cast Member, TV Writer, or Director. "
+        f"Return JSON only: an array of up to {args.limit} objects with keys "
+        "kind, person, display_name, and optional plays. Include showrunner, director, writer, and actor roles. "
+        "Use lowercase kebab-case for person and plays. Do not include prose.\n\n"
+        f"Current pack:\n{pack}"
+    )
+    suggestion_path = vault / "research" / "cast-suggestions.md"
+    raw_path = vault / "research" / "cast-suggestions-raw.md"
+    provider = resolve_provider(args.provider)
+    generation = provider.generate("cast-suggest", "cast", prompt)
+    try:
+        suggestions = _extract_json_array(generation.text)
+    except ValueError:
+        repair_prompt = (
+            prompt
+            + "\n\nYour previous output was not valid JSON. Previous output:\n"
+            + generation.text
+            + "\n\nReturn only one valid JSON array now."
+        )
+        generation = provider.generate("cast-suggest", "cast", repair_prompt)
+        try:
+            suggestions = _extract_json_array(generation.text)
+        except ValueError as exc:
+            atomic_write_text(raw_path, generation.text + "\n")
+            raise ValueError(f"AI cast suggestion did not return valid JSON. Raw output saved: {raw_path}") from exc
+    atomic_write_text(suggestion_path, f"# Cast Suggestions for {args.show}\n\n```json\n{json.dumps(suggestions, indent=2)}\n```\n")
+    if args.apply:
+        for item in suggestions:
+            slug = str(item.get("person") or slugify(str(item.get("display_name") or "person")))
+            display = str(item.get("display_name") or slug.replace("-", " ").title())
+            kind = str(item.get("kind") or "actor")
+            plays = item.get("plays")
+            plays_text = str(plays) if plays else None
+            write_person(vault, slug, display, kind, plays_text)
+            add_cast_role(vault, CastRole(kind=kind, person=slug, plays=plays_text))
+        print(f"Applied {len(suggestions)} cast suggestion(s).")
+    elif args.json:
+        print(json.dumps(suggestions, indent=2, sort_keys=True))
+    else:
+        print(json.dumps(suggestions, indent=2))
+        print(f"Saved suggestions: {suggestion_path}")
+        print("Apply them with the same command plus --apply.")
+    return 0
+
+
+def _extract_json_array(text: str) -> list[dict[str, object]]:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+        cleaned = re.sub(r"\s*```$", "", cleaned).strip()
+    start = cleaned.find("[")
+    if start == -1:
+        raise ValueError("AI cast suggestion did not contain a JSON array.")
+    data, _ = json.JSONDecoder().raw_decode(cleaned[start:])
+    if not isinstance(data, list):
+        raise ValueError("AI cast suggestion must be a JSON array.")
+    result = []
+    for item in data:
+        if not isinstance(item, dict):
+            raise ValueError("Every cast suggestion must be an object.")
+        result.append(item)
+    return result
 
 
 def cmd_episode_new(args: argparse.Namespace) -> int:

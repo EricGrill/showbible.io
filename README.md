@@ -34,3 +34,13 @@ python3 -m venv .venv
 .venv/bin/showbible status --vault /tmp/showbible-demo
 .venv/bin/showbible attach --vault /tmp/showbible-demo --once
 ```
+
+## CLI-Only Cast Workflow
+
+```bash
+showbible cast list --vault /tmp/showbible-demo
+showbible cast add --vault /tmp/showbible-demo "Patrick Stewart" --kind actor --plays picard
+showbible cast suggest --vault /tmp/showbible-demo "Star Trek: The Next Generation"
+showbible cast suggest --vault /tmp/showbible-demo "Star Trek: The Next Generation" --apply
+showbible pack edit --vault /tmp/showbible-demo patrick-stewart
+```

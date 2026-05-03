@@ -88,7 +88,7 @@ class LMStudioProvider:
                 },
             ],
             "temperature": 0.7,
-            "max_tokens": self.max_tokens,
+            "max_tokens": max(self.max_tokens, 700) if phase == "cast-suggest" else self.max_tokens,
             "stream": False,
         }
         data = self._post_chat_completion(payload)
@@ -192,6 +192,14 @@ MOCK_OUTPUTS = {
     ),
     "continuity-check": (
         "Continuity clean. New fact: the season theme is strongest when the room lets characters lose cleanly before they win."
+    ),
+    "cast-suggest": (
+        "[\n"
+        "  {\"kind\": \"showrunner\", \"person\": \"showrunner\", \"display_name\": \"Showrunner\"},\n"
+        "  {\"kind\": \"director\", \"person\": \"director\", \"display_name\": \"Director\"},\n"
+        "  {\"kind\": \"writer\", \"person\": \"staff-writer\", \"display_name\": \"Staff Writer\"},\n"
+        "  {\"kind\": \"actor\", \"person\": \"lead-actor\", \"display_name\": \"Lead Actor\", \"plays\": \"lead-character\"}\n"
+        "]"
     ),
 }
 

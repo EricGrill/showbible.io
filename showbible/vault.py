@@ -21,6 +21,13 @@ class DoctorFinding:
     message: str
 
 
+@dataclass(frozen=True)
+class CastRole:
+    kind: str
+    person: str
+    plays: str | None = None
+
+
 DEFAULT_PACK = """schema: 1
 show:
   name: {show_name}
@@ -225,6 +232,112 @@ def people(vault: Path) -> list[dict[str, str]]:
         display = _frontmatter_value(text, "display_name") or path.stem.replace("-", " ").title()
         result.append({"slug": path.stem, "display_name": display})
     return result
+
+
+def cast_roles(vault: Path) -> list[CastRole]:
+    pack = (vault / "pack.yaml").read_text(encoding="utf-8")
+    roles_block = _section_lines(pack, "roles:", stop_prefixes=("provider:", "budget:", "season:", "show:"))
+    roles: list[CastRole] = []
+    current: dict[str, str] | None = None
+    for line in roles_block:
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            if current and current.get("person"):
+                roles.append(CastRole(current.get("kind", "writer"), current["person"], current.get("plays")))
+            current = {}
+            stripped = stripped[2:].strip()
+        if current is None:
+            continue
+        if ":" in stripped:
+            key, value = stripped.split(":", 1)
+            current[key.strip()] = value.strip().strip("\"'")
+    if current and current.get("person"):
+        roles.append(CastRole(current.get("kind", "writer"), current["person"], current.get("plays")))
+    return roles
+
+
+def add_cast_role(vault: Path, role: CastRole) -> None:
+    roles = [existing for existing in cast_roles(vault) if existing.person != role.person]
+    roles.append(role)
+    write_cast_roles(vault, roles)
+
+
+def remove_cast_role(vault: Path, person_slug: str) -> None:
+    roles = [role for role in cast_roles(vault) if role.person != person_slug]
+    write_cast_roles(vault, roles)
+
+
+def write_cast_roles(vault: Path, roles: list[CastRole]) -> None:
+    pack_path = vault / "pack.yaml"
+    pack = pack_path.read_text(encoding="utf-8")
+    role_lines = ["roles:"]
+    for role in roles:
+        role_lines.append(f"  - kind: {role.kind}")
+        role_lines.append(f"    person: {role.person}")
+        if role.plays:
+            role_lines.append(f"    plays: {role.plays}")
+    replacement = "\n".join(role_lines)
+    atomic_write_text(pack_path, _replace_section(pack, "roles:", replacement, stop_prefixes=("provider:", "budget:")))
+
+
+def write_person(vault: Path, slug: str, display_name: str, eligible_role: str, plays: str | None = None) -> Path:
+    body = f"""---
+schema: 1
+slug: {slug}
+display_name: {display_name}
+roles_eligible: [{eligible_role}]
+{f"plays: {plays}" if plays else ""}
+voice:
+  fingerprint: "AI-assisted starter voice; edit this file to sharpen cadence and taste"
+  signature_moves:
+    - "protects the intent of their assigned role"
+beliefs:
+  - "Specific choices beat generic output."
+bio_anchors:
+  - "Created from the ShowBible CLI."
+trait_axes:
+  openness: 0.6
+  conscientiousness: 0.6
+  extraversion: 0.6
+  agreeableness: 0.6
+  neuroticism: 0.4
+---
+
+# {display_name} - relationships
+
+## With the room
+Starter relationship notes. Replace with researched dynamics as the pack matures.
+"""
+    path = vault / "people" / f"{slug}.md"
+    atomic_write_text(path, body.replace("\n\nvoice:", "\nvoice:"))
+    return path
+
+
+def _section_lines(text: str, header: str, stop_prefixes: tuple[str, ...]) -> list[str]:
+    lines = text.splitlines()
+    start = next((index for index, line in enumerate(lines) if line.strip() == header), None)
+    if start is None:
+        return []
+    section: list[str] = []
+    for line in lines[start + 1 :]:
+        if line and not line.startswith(" ") and line.strip().endswith(":") and line.strip() in stop_prefixes:
+            break
+        section.append(line)
+    return section
+
+
+def _replace_section(text: str, header: str, replacement: str, stop_prefixes: tuple[str, ...]) -> str:
+    lines = text.splitlines()
+    start = next((index for index, line in enumerate(lines) if line.strip() == header), None)
+    if start is None:
+        return text.rstrip() + "\n" + replacement + "\n"
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        line = lines[index]
+        if line and not line.startswith(" ") and line.strip().endswith(":") and line.strip() in stop_prefixes:
+            end = index
+            break
+    return "\n".join([*lines[:start], replacement, *lines[end:]]).rstrip() + "\n"
 
 
 def _frontmatter_value(text: str, key: str) -> str | None:

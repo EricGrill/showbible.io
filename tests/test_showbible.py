@@ -13,7 +13,7 @@ from showbible.cli import main
 from showbible.engine import PHASES, _phase_prompt, run_episode
 from showbible.providers import LMStudioProvider, resolve_provider
 from showbible.server import make_server, serve, status_payload, transcript_text
-from showbible.vault import VaultError, atomic_write_text, doctor, init_vault, list_episodes, read_json
+from showbible.vault import VaultError, atomic_write_text, cast_roles, doctor, init_vault, list_episodes, read_json
 
 
 def test_init_vault_creates_documented_shape(tmp_path: Path) -> None:
@@ -159,10 +159,18 @@ def test_episode_and_cast_commands(tmp_path: Path, capsys: pytest.CaptureFixture
     assert main(["episode", "list", "--vault", str(vault)]) == 0
     assert main(["episode", "fork", "--vault", str(vault), "S01E02", "S01E02-alt"]) == 0
     assert main(["cast", "--vault", str(vault), "--auto"]) == 0
+    assert main(["cast", "add", "--vault", str(vault), "Patrick Stewart", "--kind", "actor", "--plays", "picard"]) == 0
+    assert main(["cast", "suggest", "--vault", str(vault), "Star Trek", "--provider", "mock", "--apply"]) == 0
+    assert main(["cast", "remove", "--vault", str(vault), "lead-actor"]) == 0
     assert main(["pack", "list", "--vault", str(vault)]) == 0
     assert main(["pack", "add", "--vault", str(vault), "Star Trek"]) == 0
 
     assert list_episodes(vault) == ["S01E02", "S01E02-alt"]
+    role_slugs = {role.person for role in cast_roles(vault)}
+    assert "patrick-stewart" in role_slugs
+    assert "lead-actor" not in role_slugs
+    assert (vault / "people" / "patrick-stewart.md").is_file()
+    assert (vault / "research" / "cast-suggestions.md").is_file()
     output = capsys.readouterr().out
     assert "showrunner" in output
     assert "Star Trek" in output
@@ -251,6 +259,30 @@ def test_lmstudio_provider_uses_local_openai_compatible_endpoint(monkeypatch: py
     assert generation.tokens == 42
 
 
+def test_lmstudio_cast_suggest_gets_larger_token_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = {}
+
+    class Response:
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps({"choices": [{"message": {"content": "[]"}}]}).encode("utf-8")
+
+    def fake_urlopen(request: urllib.request.Request, timeout: float) -> Response:
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    LMStudioProvider(max_tokens=123).generate("cast-suggest", "cast", "Return JSON.")
+
+    assert captured["body"]["max_tokens"] == 700
+
+
 def test_lmstudio_provider_retries_empty_completion(monkeypatch: pytest.MonkeyPatch) -> None:
     responses = [
         {"choices": [{"message": {"content": ""}}]},
@@ -293,6 +325,46 @@ def test_lmstudio_provider_fallback_prompt_is_concrete() -> None:
 
     assert "Invent concrete details" in prompt
     assert "No prior episode context" not in prompt
+
+
+def test_cast_suggest_prompt_rejects_generic_labels(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    vault = init_vault(tmp_path / "demo")
+    captured = {}
+
+    class Provider:
+        name = "capture"
+
+        def generate(self, phase: str, episode_id: str, prompt: str):
+            captured["phase"] = phase
+            captured["prompt"] = prompt
+            return type("Generation", (), {"text": "[]", "tokens": 0, "dollars": 0.0})()
+
+    monkeypatch.setattr("showbible.cli.resolve_provider", lambda name: Provider())
+
+    assert main(["cast", "suggest", "--vault", str(vault), "Star Trek: The Next Generation"]) == 0
+    assert captured["phase"] == "cast-suggest"
+    assert "Use real public people associated with the show" in captured["prompt"]
+    assert "Do not invent generic labels" in captured["prompt"]
+
+
+def test_cast_suggest_repairs_invalid_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    vault = init_vault(tmp_path / "demo")
+    calls = []
+
+    class Provider:
+        name = "repair"
+
+        def generate(self, phase: str, episode_id: str, prompt: str):
+            calls.append(prompt)
+            text = "not json" if len(calls) == 1 else '[{"kind":"actor","person":"patrick-stewart","display_name":"Patrick Stewart","plays":"picard"}]'
+            return type("Generation", (), {"text": text, "tokens": 0, "dollars": 0.0})()
+
+    monkeypatch.setattr("showbible.cli.resolve_provider", lambda name: Provider())
+
+    assert main(["cast", "suggest", "--vault", str(vault), "Star Trek: The Next Generation", "--apply"]) == 0
+    assert len(calls) == 2
+    assert "previous output was not valid JSON" in calls[1]
+    assert (vault / "people" / "patrick-stewart.md").is_file()
 
 
 def test_phase_prompt_includes_show_pack(tmp_path: Path) -> None:
