@@ -11,7 +11,7 @@ import pytest
 
 from showbible.cli import main
 from showbible.engine import PHASES, _phase_prompt, run_episode
-from showbible.providers import LMStudioProvider, resolve_provider
+from showbible.providers import LMStudioProvider, ProviderError, resolve_provider
 from showbible.server import make_server, serve, status_payload, transcript_text
 from showbible.vault import VaultError, atomic_write_text, cast_roles, doctor, init_vault, list_episodes, read_json
 
@@ -157,8 +157,10 @@ def test_episode_and_cast_commands(tmp_path: Path, capsys: pytest.CaptureFixture
 
     assert main(["episode", "new", "--vault", str(vault), "S01E02"]) == 0
     assert main(["episode", "list", "--vault", str(vault)]) == 0
+    assert main(["episode", "show", "--vault", str(vault), "S01E02"]) == 0
     assert main(["episode", "fork", "--vault", str(vault), "S01E02", "S01E02-alt"]) == 0
     assert main(["cast", "--vault", str(vault), "--auto"]) == 0
+    assert main(["cast", "kinds"]) == 0
     assert main(["cast", "add", "--vault", str(vault), "Patrick Stewart", "--kind", "actor", "--plays", "picard"]) == 0
     assert main(["cast", "suggest", "--vault", str(vault), "Star Trek", "--provider", "mock", "--apply"]) == 0
     assert main(["cast", "remove", "--vault", str(vault), "lead-actor"]) == 0
@@ -173,6 +175,7 @@ def test_episode_and_cast_commands(tmp_path: Path, capsys: pytest.CaptureFixture
     assert (vault / "research" / "cast-suggestions.md").is_file()
     output = capsys.readouterr().out
     assert "showrunner" in output
+    assert "lore-keeper" in output
     assert "Star Trek" in output
 
 
@@ -237,6 +240,75 @@ def test_cast_suggest_uses_current_show_and_episode_scope(tmp_path: Path, monkey
         {"kind": "actor", "person": "lorraine-bracco", "plays": "melfi"}
     ]
     assert (vault / "episodes" / "S01E01" / "cast-suggestions.md").is_file()
+
+
+def test_cast_suggest_excludes_existing_people(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    vault = init_vault(tmp_path / "Sopranos", show_name="The Sopranos")
+    captured = {}
+
+    class Provider:
+        name = "capture"
+
+        def generate(self, phase: str, episode_id: str, prompt: str):
+            captured["prompt"] = prompt
+            return type(
+                "Generation",
+                (),
+                {
+                    "text": (
+                        "["
+                        '{"kind":"showrunner","person":"showrunner","display_name":"Showrunner"},'
+                        '{"kind":"actor","person":"edie-falco","display_name":"Edie Falco","plays":"carmela"}'
+                        "]"
+                    ),
+                    "tokens": 0,
+                    "dollars": 0.0,
+                },
+            )()
+
+    monkeypatch.setattr("showbible.cli.resolve_provider", lambda name: Provider())
+
+    assert main(["cast", "suggest", "--vault", str(vault), "--json"]) == 0
+
+    output = capsys.readouterr().out
+    assert "Exclude these already-cast people" in captured["prompt"]
+    assert "showrunner" in captured["prompt"]
+    assert "edie-falco" in output
+    assert '"person": "showrunner"' not in output
+
+
+def test_cast_suggest_falls_back_when_provider_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    vault = init_vault(tmp_path / "Sopranos", show_name="The Sopranos")
+
+    class Provider:
+        name = "broken"
+
+        def generate(self, phase: str, episode_id: str, prompt: str):
+            raise ProviderError("empty local completion")
+
+    monkeypatch.setattr("showbible.cli.resolve_provider", lambda name: Provider())
+
+    assert main(["cast", "suggest", "--vault", str(vault), "--json"]) == 0
+
+    output = capsys.readouterr().out
+    assert "terence-winter" in output
+    assert '"person": "showrunner"' not in output
+    assert "Provider failed" in (vault / "research" / "cast-suggestions-raw.md").read_text(encoding="utf-8")
+
+
+def test_help_topics_are_detailed(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["help", "cast"]) == 0
+    assert main(["help", "roles"]) == 0
+    assert main(["help", "tui"]) == 0
+
+    output = capsys.readouterr().out
+    assert "showbible cast suggest --pick" in output
+    assert "lore-keeper" in output
+    assert "space" in output
 
 
 def test_server_payloads(tmp_path: Path) -> None:

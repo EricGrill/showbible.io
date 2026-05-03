@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import curses
 import json
 import os
 import re
@@ -42,10 +43,90 @@ EXIT_VAULT = 3
 EXIT_INTEGRITY = 4
 EXIT_PROVIDER = 5
 
+CAST_KINDS = {
+    "showrunner": "Leads season taste, theme, and final calls.",
+    "director": "Breaks scenes, frames conflict, and integrates polish.",
+    "writer": "Drafts pitches, beats, dialogue, and alternate scene turns.",
+    "actor": "Protects a character voice; use --plays for the character slug.",
+    "lore-keeper": "Checks continuity, canon, callbacks, and arc consistency.",
+    "producer": "Steers constraints, budget, audience, and franchise fit.",
+    "guest-writer": "Episode-specific outside voice or specialist pass.",
+}
+
+HELP_TOPICS = {
+    "cast": """Cast workflow
+
+Scope follows your current folder:
+  show root                  edits pack.yaml roles
+  episodes/S01E03            edits that episode's meta.json cast_overrides
+
+Commands:
+  showbible cast list
+  showbible cast kinds
+  showbible cast add "Edie Falco" --kind actor --plays carmela
+  showbible cast remove edie-falco
+  showbible cast suggest
+  showbible cast suggest --pick
+  showbible cast suggest --json
+
+Suggestions exclude the current effective cast. In a terminal, suggest opens
+a picker; use space to select, enter to apply, q to cancel.
+""",
+    "episodes": """Episode workflow
+
+Commands:
+  showbible episode new S01E01
+  showbible episode list
+  showbible episode show S01E01
+  showbible episode fork S01E01 S01E01-alt
+  showbible run --episode S01E01
+  showbible continue
+
+Episode folders can override show-level cast:
+  cd episodes/S01E01
+  showbible cast add "Guest Director" --kind director
+""",
+    "roles": "Cast role kinds:\n"
+    + "\n".join(f"  {kind:<12} {description}" for kind, description in CAST_KINDS.items()),
+    "ai": """AI workflow
+
+Default provider:
+  LM Studio at http://127.0.0.1:1234
+  model google/gemma-4-e4b
+
+Useful commands:
+  showbible cast suggest
+  showbible run --episode S01E01
+  showbible run --provider mock --episode S01E01
+
+Environment overrides:
+  LMSTUDIO_BASE_URL
+  LMSTUDIO_MODEL
+  LMSTUDIO_MAX_TOKENS
+""",
+    "tui": """Terminal UI
+
+Cast suggestions use a TUI automatically when stdout/stdin are real terminals.
+You can force it with:
+  showbible cast suggest --pick
+
+Keys:
+  up/down or k/j   move
+  space            toggle selection
+  enter            apply selected
+  a                select all
+  q                cancel
+""",
+}
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="showbible", description="Local-first AI writers room framework.")
     sub = parser.add_subparsers(dest="command")
+
+    help_cmd = sub.add_parser("help", help="show detailed workflow help")
+    help_cmd.add_argument("topic", nargs="?", choices=["cast", "episodes", "roles", "ai", "tui"])
+    help_cmd.set_defaults(func=cmd_help)
 
     init = sub.add_parser("init", help="scaffold a ShowBible vault")
     init.add_argument("name", help="target directory")
@@ -138,6 +219,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_vault_flag(cast_list)
     add_cast_scope_flags(cast_list)
     cast_list.set_defaults(func=cmd_cast_list)
+    cast_kinds = cast_sub.add_parser("kinds", help="list supported cast role kinds")
+    cast_kinds.set_defaults(func=cmd_cast_kinds)
     cast_add = cast_sub.add_parser("add")
     add_vault_flag(cast_add)
     add_cast_scope_flags(cast_add)
@@ -158,6 +241,7 @@ def build_parser() -> argparse.ArgumentParser:
     cast_suggest.add_argument("--provider", default="lmstudio")
     cast_suggest.add_argument("--limit", type=int, default=6)
     cast_suggest.add_argument("--apply", action="store_true", help="write suggested people and roles into the vault")
+    cast_suggest.add_argument("--pick", action="store_true", help="open a terminal picker for returned suggestions")
     cast_suggest.add_argument("--json", action="store_true", help="print parsed suggestions as JSON")
     cast_suggest.set_defaults(func=cmd_cast_suggest)
     cast.set_defaults(func=cmd_cast)
@@ -171,6 +255,11 @@ def build_parser() -> argparse.ArgumentParser:
     ep_list = ep_sub.add_parser("list")
     add_vault_flag(ep_list)
     ep_list.set_defaults(func=cmd_episode_list)
+    ep_show = ep_sub.add_parser("show")
+    add_vault_flag(ep_show)
+    ep_show.add_argument("episode_id")
+    ep_show.add_argument("--json", action="store_true")
+    ep_show.set_defaults(func=cmd_episode_show)
     ep_fork = ep_sub.add_parser("fork")
     add_vault_flag(ep_fork)
     ep_fork.add_argument("episode_id")
@@ -192,6 +281,16 @@ def add_cast_scope_flags(parser: argparse.ArgumentParser) -> None:
 def cmd_init(args: argparse.Namespace) -> int:
     vault = init_vault(Path(args.name), show_name=args.from_show, force=args.force)
     print(f"Initialized ShowBible vault: {vault}")
+    return 0
+
+
+def cmd_help(args: argparse.Namespace) -> int:
+    topic = args.topic
+    if not topic:
+        print("ShowBible help topics: cast, episodes, roles, ai, tui")
+        print("Try: showbible help cast")
+        return 0
+    print(HELP_TOPICS[topic].strip())
     return 0
 
 
@@ -356,6 +455,12 @@ def cmd_cast_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_cast_kinds(args: argparse.Namespace) -> int:
+    for kind, description in CAST_KINDS.items():
+        print(f"{kind:<12} {description}")
+    return 0
+
+
 def cmd_cast_add(args: argparse.Namespace) -> int:
     vault = resolve_vault(args.vault)
     episode_id = _cast_episode_scope(vault, args)
@@ -386,6 +491,9 @@ def cmd_cast_suggest(args: argparse.Namespace) -> int:
     episode_id = _cast_episode_scope(vault, args)
     pack = (vault / "pack.yaml").read_text(encoding="utf-8")
     show_name = args.show or _show_name_from_pack(pack) or vault.name
+    existing_roles = effective_cast_roles(vault, episode_id)
+    existing_people = {role.person for role in existing_roles}
+    existing_line = ", ".join(sorted(existing_people)) or "none"
     episode_context = ""
     if episode_id:
         episode = ensure_episode(vault, episode_id)
@@ -398,6 +506,7 @@ def cmd_cast_suggest(args: argparse.Namespace) -> int:
         "kind, person, display_name, and optional plays. Include showrunner, director, writer, and actor roles. "
         "Use lowercase kebab-case for person and plays. The plays value must be one string, never an array. "
         "Return compact complete JSON and do not include prose. "
+        f"Exclude these already-cast people: {existing_line}. "
         f"If episode scope is present, suggest additions or overrides for that episode only.\n\n"
         f"Current pack:\n{pack}{episode_context}"
     )
@@ -405,42 +514,55 @@ def cmd_cast_suggest(args: argparse.Namespace) -> int:
     suggestion_path = suggestion_dir / "cast-suggestions.md"
     raw_path = suggestion_dir / "cast-suggestions-raw.md"
     provider = resolve_provider(args.provider)
-    generation = provider.generate("cast-suggest", "cast", prompt)
     try:
-        suggestions = _extract_json_array(generation.text)
-    except ValueError:
-        repair_prompt = (
-            prompt
-            + "\n\nYour previous output was not valid JSON. Previous output:\n"
-            + generation.text
-            + "\n\nReturn only one valid JSON array now."
-        )
-        generation = provider.generate("cast-suggest", "cast", repair_prompt)
+        generation = provider.generate("cast-suggest", "cast", prompt)
         try:
             suggestions = _extract_json_array(generation.text)
-        except ValueError as exc:
-            atomic_write_text(raw_path, generation.text + "\n")
-            raise ValueError(f"AI cast suggestion did not return valid JSON. Raw output saved: {raw_path}") from exc
+        except ValueError:
+            repair_prompt = (
+                prompt
+                + "\n\nYour previous output was not valid JSON. Previous output:\n"
+                + generation.text
+                + "\n\nReturn only one valid JSON array now."
+            )
+            generation = provider.generate("cast-suggest", "cast", repair_prompt)
+            try:
+                suggestions = _extract_json_array(generation.text)
+            except ValueError as exc:
+                atomic_write_text(raw_path, generation.text + "\n")
+                raise ValueError(f"AI cast suggestion did not return valid JSON. Raw output saved: {raw_path}") from exc
+    except ProviderError as exc:
+        suggestions = _fallback_cast_suggestions(show_name, args.limit, existing_people)
+        atomic_write_text(raw_path, f"Provider failed: {exc}\n")
+    suggestions = _filter_existing_suggestions(suggestions, existing_people)
+    if not suggestions:
+        refill_prompt = (
+            prompt
+            + "\n\nAll previous suggestions were already in the cast. Return different people only. "
+            + f"Do not include any of: {existing_line}."
+        )
+        try:
+            generation = provider.generate("cast-suggest", "cast", refill_prompt)
+            suggestions = _filter_existing_suggestions(_extract_json_array(generation.text), existing_people)
+        except (ProviderError, ValueError):
+            suggestions = _fallback_cast_suggestions(show_name, args.limit, existing_people)
     atomic_write_text(suggestion_path, f"# Cast Suggestions for {show_name}\n\n```json\n{json.dumps(suggestions, indent=2)}\n```\n")
     if args.apply:
-        for item in suggestions:
-            slug = str(item.get("person") or slugify(str(item.get("display_name") or "person")))
-            display = str(item.get("display_name") or slug.replace("-", " ").title())
-            kind = str(item.get("kind") or "actor")
-            plays_text = _normalize_plays(item.get("plays"))
-            write_person(vault, slug, display, kind, plays_text)
-            role = CastRole(kind=kind, person=slug, plays=plays_text)
-            if episode_id:
-                add_episode_cast_role(vault, episode_id, role)
-            else:
-                add_cast_role(vault, role)
+        _apply_cast_suggestions(vault, episode_id, suggestions)
         print(f"Applied {len(suggestions)} cast suggestion(s) to {'episode ' + episode_id if episode_id else 'show'}.")
+    elif args.pick or _should_pick(args):
+        picked = _pick_cast_suggestions(suggestions, f"{show_name} cast suggestions")
+        if picked:
+            _apply_cast_suggestions(vault, episode_id, picked)
+            print(f"Applied {len(picked)} selected cast suggestion(s) to {'episode ' + episode_id if episode_id else 'show'}.")
+        else:
+            print("No cast suggestions applied.")
     elif args.json:
         print(json.dumps(suggestions, indent=2, sort_keys=True))
     else:
         print(json.dumps(suggestions, indent=2))
         print(f"Saved suggestions: {suggestion_path}")
-        print("Apply them with the same command plus --apply.")
+        print("Run from a terminal for the picker, or use --pick / --apply / --json.")
     return 0
 
 
@@ -455,6 +577,119 @@ def _cast_episode_scope(vault: Path, args: argparse.Namespace) -> str | None:
 def _show_name_from_pack(pack: str) -> str | None:
     match = re.search(r"^\s*name:\s*(.+)$", pack, flags=re.MULTILINE)
     return match.group(1).strip().strip("\"'") if match else None
+
+
+def _filter_existing_suggestions(
+    suggestions: list[dict[str, object]],
+    existing_people: set[str],
+) -> list[dict[str, object]]:
+    filtered = []
+    seen = set()
+    for item in suggestions:
+        slug = str(item.get("person") or slugify(str(item.get("display_name") or "")))
+        if not slug or slug in existing_people or slug in seen:
+            continue
+        item["person"] = slug
+        filtered.append(item)
+        seen.add(slug)
+    return filtered
+
+
+def _fallback_cast_suggestions(show_name: str, limit: int, existing_people: set[str]) -> list[dict[str, object]]:
+    normalized = show_name.lower()
+    if "sopranos" in normalized:
+        candidates = [
+            {"kind": "writer", "person": "terence-winter", "display_name": "Terence Winter"},
+            {"kind": "writer", "person": "matthew-weiner", "display_name": "Matthew Weiner"},
+            {"kind": "director", "person": "tim-van-patten", "display_name": "Tim Van Patten"},
+            {"kind": "director", "person": "allen-coulter", "display_name": "Allen Coulter"},
+            {"kind": "actor", "person": "edie-falco", "display_name": "Edie Falco", "plays": "carmela-soprano"},
+            {"kind": "actor", "person": "lorraine-bracco", "display_name": "Lorraine Bracco", "plays": "jennifer-melfi"},
+            {"kind": "actor", "person": "michael-imperioli", "display_name": "Michael Imperioli", "plays": "christopher-moltisanti"},
+        ]
+    elif "next generation" in normalized or "star trek" in normalized:
+        candidates = [
+            {"kind": "showrunner", "person": "michael-piller", "display_name": "Michael Piller"},
+            {"kind": "writer", "person": "ronald-d-moore", "display_name": "Ronald D. Moore"},
+            {"kind": "director", "person": "jonathan-frakes", "display_name": "Jonathan Frakes"},
+            {"kind": "actor", "person": "patrick-stewart", "display_name": "Patrick Stewart", "plays": "picard"},
+            {"kind": "actor", "person": "brent-spiner", "display_name": "Brent Spiner", "plays": "data"},
+            {"kind": "actor", "person": "levar-burton", "display_name": "LeVar Burton", "plays": "geordi"},
+        ]
+    else:
+        candidates = [
+            {"kind": "writer", "person": "research-writer", "display_name": "Research Writer"},
+            {"kind": "director", "person": "scene-director", "display_name": "Scene Director"},
+            {"kind": "lore-keeper", "person": "lore-keeper", "display_name": "Lore Keeper"},
+        ]
+    return _filter_existing_suggestions(candidates, existing_people)[:limit]
+
+
+def _apply_cast_suggestions(vault: Path, episode_id: str | None, suggestions: list[dict[str, object]]) -> None:
+    for item in suggestions:
+        slug = str(item.get("person") or slugify(str(item.get("display_name") or "person")))
+        display = str(item.get("display_name") or slug.replace("-", " ").title())
+        kind = str(item.get("kind") or "actor")
+        plays_text = _normalize_plays(item.get("plays"))
+        write_person(vault, slug, display, kind, plays_text)
+        role = CastRole(kind=kind, person=slug, plays=plays_text)
+        if episode_id:
+            add_episode_cast_role(vault, episode_id, role)
+        else:
+            add_cast_role(vault, role)
+
+
+def _should_pick(args: argparse.Namespace) -> bool:
+    return not args.json and not args.apply and sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _pick_cast_suggestions(suggestions: list[dict[str, object]], title: str) -> list[dict[str, object]]:
+    if not suggestions:
+        return []
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        print(json.dumps(suggestions, indent=2))
+        print("No interactive terminal detected; rerun with --apply to accept all suggestions.")
+        return []
+    selected = set()
+    current = 0
+
+    def draw(screen: "curses.window") -> None:
+        nonlocal current, selected
+        curses.curs_set(0)
+        screen.keypad(True)
+        while True:
+            screen.erase()
+            height, width = screen.getmaxyx()
+            screen.addnstr(0, 0, f"ShowBible - {title}", width - 1, curses.A_BOLD)
+            screen.addnstr(1, 0, "space select  enter apply  a all  q cancel", width - 1)
+            for index, item in enumerate(suggestions[: max(0, height - 4)]):
+                marker = "[x]" if index in selected else "[ ]"
+                plays = f" as {item.get('plays')}" if item.get("plays") else ""
+                line = f"{marker} {item.get('kind', 'actor')}: {item.get('person')} ({item.get('display_name', '')}){plays}"
+                attr = curses.A_REVERSE if index == current else curses.A_NORMAL
+                screen.addnstr(index + 3, 0, line, width - 1, attr)
+            key = screen.getch()
+            if key in (ord("q"), 27):
+                selected.clear()
+                return
+            if key in (curses.KEY_DOWN, ord("j")):
+                current = min(len(suggestions) - 1, current + 1)
+            elif key in (curses.KEY_UP, ord("k")):
+                current = max(0, current - 1)
+            elif key == ord(" "):
+                if current in selected:
+                    selected.remove(current)
+                else:
+                    selected.add(current)
+            elif key == ord("a"):
+                selected = set(range(len(suggestions)))
+            elif key in (curses.KEY_ENTER, 10, 13):
+                if not selected:
+                    selected.add(current)
+                return
+
+    curses.wrapper(draw)
+    return [suggestions[index] for index in sorted(selected)]
 
 
 def _extract_json_array(text: str) -> list[dict[str, object]]:
@@ -535,6 +770,24 @@ def cmd_episode_list(args: argparse.Namespace) -> int:
     vault = resolve_vault(args.vault)
     for episode in list_episodes(vault):
         print(episode)
+    return 0
+
+
+def cmd_episode_show(args: argparse.Namespace) -> int:
+    vault = resolve_vault(args.vault)
+    episode = ensure_episode(vault, args.episode_id)
+    meta = read_json(episode / "meta.json", {})
+    if args.json:
+        print(json.dumps(meta, indent=2, sort_keys=True))
+        return 0
+    print(f"Episode: {args.episode_id}")
+    print(f"Status: {meta.get('status', 'created')}")
+    print(f"Completed phases: {', '.join(meta.get('completed_phases', [])) or 'none'}")
+    overrides = meta.get("cast_overrides", [])
+    print(f"Cast overrides: {len(overrides)}")
+    for item in overrides:
+        plays = f" as {item.get('plays')}" if item.get("plays") else ""
+        print(f"  {item.get('kind', 'actor')}: {item.get('person')}{plays}")
     return 0
 
 

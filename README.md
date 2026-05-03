@@ -58,3 +58,18 @@ showbible cast suggest --apply                           # episode-only AI sugge
 showbible cast add --show "Edie Falco" --kind actor      # force show-level from episode cwd
 showbible cast add --episode S01E05 "Guest Star"         # force a specific episode
 ```
+
+Discover the administration surface from the CLI:
+
+```bash
+showbible help
+showbible help cast
+showbible help episodes
+showbible help roles
+showbible cast kinds
+showbible episode show S01E01
+```
+
+`showbible cast suggest` excludes the current effective cast. In a real terminal
+it opens a picker; use `--json` for scripts, or `--apply` to accept all returned
+suggestions.
