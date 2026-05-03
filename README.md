@@ -8,6 +8,7 @@ This repository currently contains the first v0 vertical slice:
 
 - `showbible init <path>` scaffolds a vault.
 - `showbible run --provider mock` generates a deterministic episode pipeline.
+- `showbible workflow` / `showbible tui` guide first-episode setup.
 - `showbible status`, `doctor`, `transcript`, `lore`, `arcs`, and `cost`
   inspect the vault.
 - `showbible attach` serves a loopback-only web UI from the Python package.
@@ -37,6 +38,18 @@ python3 -m venv .venv
 
 ## CLI-Only Cast Workflow
 
+For the minimum first-episode path, let the CLI make the checklist explicit:
+
+```bash
+cd /tmp/showbible-demo
+showbible workflow --episode S01E01
+showbible tui --episode S01E01
+```
+
+The workflow creates `episodes/S01E01` if needed, shows the current effective
+cast, shows episode-relevant arcs, and prints the next commands for cast
+suggestions, arc beats, and running the episode.
+
 ```bash
 cd /tmp/showbible-demo
 showbible cast list
@@ -65,8 +78,10 @@ Discover the administration surface from the CLI:
 showbible help
 showbible help cast
 showbible help episodes
+showbible help arcs
 showbible help roles
 showbible help lore
+showbible help workflow
 showbible cast kinds
 showbible episode show S01E01
 ```
@@ -82,4 +97,13 @@ showbible lore
 showbible lore explain
 showbible lore paths
 showbible lore add "Tony owes Junior a debt" --source S01E01
+```
+
+Arcs are command-driven too:
+
+```bash
+showbible arcs
+showbible arcs current --episode S01E01
+showbible arcs add "Pilot establishes the central argument" --episode S01E01
+showbible arcs show season-theme
 ```

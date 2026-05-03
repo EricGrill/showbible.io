@@ -79,12 +79,29 @@ Commands:
   showbible episode list
   showbible episode show S01E01
   showbible episode fork S01E01 S01E01-alt
+  showbible workflow --episode S01E01
+  showbible tui --episode S01E01
   showbible run --episode S01E01
   showbible continue
 
 Episode folders can override show-level cast:
   cd episodes/S01E01
   showbible cast add "Guest Director" --kind director
+""",
+    "arcs": """Arc workflow
+
+Arcs are markdown files in arcs/*.md. The default vault starts with
+arcs/season-theme.md.
+
+Commands:
+  showbible arcs
+  showbible arcs list
+  showbible arcs current --episode S01E01
+  showbible arcs show season-theme
+  showbible arcs add "Pilot establishes the central argument" --episode S01E01
+
+Scope follows your current folder. From episodes/S01E01, arcs current and arcs
+add target S01E01 unless --episode is passed.
 """,
     "roles": "Cast role kinds:\n"
     + "\n".join(f"  {kind:<12} {description}" for kind, description in CAST_KINDS.items()),
@@ -106,15 +123,19 @@ Environment overrides:
 """,
     "tui": """Terminal UI
 
-Cast suggestions use a TUI automatically when stdout/stdin are real terminals.
-You can force it with:
+Use the guided workflow TUI to move through the minimum setup:
+  showbible tui
+  showbible workflow
+
+Cast suggestions also use a TUI automatically when stdout/stdin are real terminals.
+You can force cast picking with:
   showbible cast suggest --pick
 
 Keys:
   up/down or k/j   move
-  space            toggle selection
-  enter            apply selected
-  a                select all
+  enter            run command / apply
+  space            toggle selection in pickers
+  a                select all in pickers
   q                cancel
 """,
     "lore": """Lore workflow
@@ -135,6 +156,17 @@ added from the CLI:
 Current v0 behavior is append-only canon. Future review/TUI flows should split
 proposed lore from accepted canon before writing.
 """,
+    "workflow": """Guided workflow
+
+Minimum path for a first episode:
+  showbible init Sopranos --from "The Sopranos"
+  cd Sopranos
+  showbible workflow --episode S01E01
+
+The workflow creates the episode folder if needed, shows current cast, shows
+episode-relevant arcs, and offers the next commands. In a real terminal it opens
+a TUI menu; in noninteractive shells it prints the same minimum checklist.
+""",
 }
 
 
@@ -143,7 +175,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command")
 
     help_cmd = sub.add_parser("help", help="show detailed workflow help")
-    help_cmd.add_argument("topic", nargs="?", choices=["cast", "episodes", "roles", "ai", "tui", "lore"])
+    help_cmd.add_argument("topic", nargs="?", choices=["cast", "episodes", "arcs", "roles", "ai", "tui", "lore", "workflow"])
     help_cmd.set_defaults(func=cmd_help)
 
     init = sub.add_parser("init", help="scaffold a ShowBible vault")
@@ -198,6 +230,20 @@ def build_parser() -> argparse.ArgumentParser:
     transcript.add_argument("episode", nargs="?")
     transcript.set_defaults(func=cmd_transcript)
 
+    workflow = sub.add_parser("workflow", help="guided episode setup and room workflow")
+    add_vault_flag(workflow)
+    workflow.add_argument("--episode", default="S01E01")
+    workflow.add_argument("--provider", default="lmstudio")
+    workflow.add_argument("--no-tui", action="store_true", help="print the workflow instead of opening the terminal UI")
+    workflow.set_defaults(func=cmd_workflow)
+
+    tui = sub.add_parser("tui", help="open the guided terminal UI")
+    add_vault_flag(tui)
+    tui.add_argument("--episode", default="S01E01")
+    tui.add_argument("--provider", default="lmstudio")
+    tui.add_argument("--no-tui", action="store_true", help="print the workflow instead of opening the terminal UI")
+    tui.set_defaults(func=cmd_workflow)
+
     lore = sub.add_parser("lore", help="inspect and administer lore")
     add_vault_flag(lore)
     lore_sub = lore.add_subparsers(dest="lore_command")
@@ -217,8 +263,29 @@ def build_parser() -> argparse.ArgumentParser:
     lore_paths.set_defaults(func=cmd_lore_paths)
     lore.set_defaults(func=cmd_lore)
 
-    arcs = sub.add_parser("arcs", help="list arcs")
+    arcs = sub.add_parser("arcs", help="inspect and administer arcs")
     add_vault_flag(arcs)
+    arcs.add_argument("--episode", help="episode scope for current arc context")
+    arcs_sub = arcs.add_subparsers(dest="arcs_command")
+    arcs_list = arcs_sub.add_parser("list", help="list arcs")
+    add_vault_flag(arcs_list)
+    arcs_list.add_argument("--episode", help="episode scope for current arc context")
+    arcs_list.set_defaults(func=cmd_arcs_list)
+    arcs_current = arcs_sub.add_parser("current", help="show episode-relevant arcs")
+    add_vault_flag(arcs_current)
+    arcs_current.add_argument("--episode", help="episode scope; defaults from cwd or room state")
+    arcs_current.set_defaults(func=cmd_arcs_current)
+    arcs_show = arcs_sub.add_parser("show", help="print an arc file")
+    add_vault_flag(arcs_show)
+    arcs_show.add_argument("arc", nargs="?", default="season-theme")
+    arcs_show.set_defaults(func=cmd_arcs_show)
+    arcs_add = arcs_sub.add_parser("add", help="add an episode beat to an arc")
+    add_vault_flag(arcs_add)
+    arcs_add.add_argument("beat")
+    arcs_add.add_argument("--arc", default="season-theme")
+    arcs_add.add_argument("--episode", help="episode target; defaults from cwd or S01E01")
+    arcs_add.add_argument("--status", default="planned")
+    arcs_add.set_defaults(func=cmd_arcs_add)
     arcs.set_defaults(func=cmd_arcs)
 
     cost = sub.add_parser("cost", help="print cost ledger")
@@ -320,8 +387,8 @@ def cmd_init(args: argparse.Namespace) -> int:
 def cmd_help(args: argparse.Namespace) -> int:
     topic = args.topic
     if not topic:
-        print("ShowBible help topics: cast, episodes, roles, ai, tui")
-        print("Try: showbible help cast")
+        print("ShowBible help topics: cast, episodes, arcs, roles, ai, tui, lore, workflow")
+        print("Try: showbible help workflow")
         return 0
     print(HELP_TOPICS[topic].strip())
     return 0
@@ -405,6 +472,17 @@ def cmd_transcript(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_workflow(args: argparse.Namespace) -> int:
+    vault = resolve_vault(args.vault)
+    episode_id = args.episode or _current_episode(vault) or "S01E01"
+    ensure_episode(vault, episode_id)
+    _write_room_state(vault, "planning", episode_id=episode_id)
+    if not args.no_tui and sys.stdin.isatty() and sys.stdout.isatty():
+        return _workflow_tui(vault, episode_id, args.provider)
+    _print_workflow_snapshot(vault, episode_id, args.provider)
+    return 0
+
+
 def cmd_lore(args: argparse.Namespace) -> int:
     if getattr(args, "lore_command", None):
         return int(args.func(args) or 0)
@@ -446,9 +524,284 @@ def cmd_lore_paths(args: argparse.Namespace) -> int:
 
 
 def cmd_arcs(args: argparse.Namespace) -> int:
+    if getattr(args, "arcs_command", None):
+        return int(args.func(args) or 0)
+    return cmd_arcs_list(args)
+
+
+def cmd_arcs_list(args: argparse.Namespace) -> int:
     vault = resolve_vault(args.vault)
+    episode_id = _arc_episode_scope(vault, args)
+    arcs = _arc_summaries(vault)
+    if episode_id:
+        print(f"Arc context for {episode_id}:")
+    if not arcs:
+        print("No arcs set.")
+        return 0
+    for arc in arcs:
+        target_count = len(_beats_for_episode(arc["beats"], episode_id)) if episode_id else len(arc["beats"])
+        suffix = f" - {target_count} relevant beat(s)" if episode_id else f" - {len(arc['beats'])} beat(s)"
+        print(f"{arc['slug']}: {arc['title']}{suffix}")
+    return 0
+
+
+def cmd_arcs_current(args: argparse.Namespace) -> int:
+    vault = resolve_vault(args.vault)
+    episode_id = _arc_episode_scope(vault, args) or _current_episode(vault) or "S01E01"
+    print(_format_current_arcs(vault, episode_id).rstrip())
+    return 0
+
+
+def cmd_arcs_show(args: argparse.Namespace) -> int:
+    vault = resolve_vault(args.vault)
+    path = _arc_path(vault, args.arc)
+    if not path.exists():
+        raise VaultError(f"Arc not found: {args.arc}")
+    print(path.read_text(encoding="utf-8").rstrip())
+    return 0
+
+
+def cmd_arcs_add(args: argparse.Namespace) -> int:
+    vault = resolve_vault(args.vault)
+    episode_id = _arc_episode_scope(vault, args) or "S01E01"
+    path = _arc_path(vault, args.arc)
+    if not path.exists():
+        title = args.arc.replace("-", " ").title()
+        atomic_write_text(path, f"# {title}\n\n")
+    existing = path.read_text(encoding="utf-8").rstrip()
+    if "## Episode Beats" not in existing:
+        existing += "\n\n## Episode Beats\n"
+    entry = f"\n- {episode_id} [{args.status}] {args.beat.strip()}"
+    atomic_write_text(path, existing.rstrip() + entry + "\n")
+    print(f"Added arc beat to {path.name}: {episode_id} [{args.status}] {args.beat.strip()}")
+    return 0
+
+
+def _arc_episode_scope(vault: Path, args: argparse.Namespace) -> str | None:
+    if getattr(args, "episode", None):
+        return args.episode
+    return infer_episode_id(vault)
+
+
+def _current_episode(vault: Path) -> str | None:
+    inferred = infer_episode_id(vault)
+    if inferred:
+        return inferred
+    room_state = read_json(vault / ".room" / "state.json", {})
+    if room_state.get("current_episode"):
+        return str(room_state["current_episode"])
+    episodes = list_episodes(vault)
+    return episodes[0] if episodes else None
+
+
+def _arc_path(vault: Path, arc: str) -> Path:
+    slug = slugify(arc.removesuffix(".md"))
+    return vault / "arcs" / f"{slug}.md"
+
+
+def _arc_summaries(vault: Path) -> list[dict[str, object]]:
+    summaries = []
     for path in sorted((vault / "arcs").glob("*.md")):
-        print(path.name)
+        text = path.read_text(encoding="utf-8")
+        title = _markdown_title(text) or path.stem.replace("-", " ").title()
+        summaries.append({"slug": path.stem, "title": title, "path": path, "beats": _arc_beats(text)})
+    return summaries
+
+
+def _markdown_title(text: str) -> str | None:
+    for line in text.splitlines():
+        if line.startswith("# "):
+            return line[2:].strip()
+    return None
+
+
+def _arc_beats(text: str) -> list[dict[str, str]]:
+    beats = []
+    current: dict[str, str] | None = None
+    for raw in text.splitlines():
+        line = raw.strip()
+        target = re.match(r"-?\s*episode_target:\s*(.+)$", line)
+        if target:
+            if current and current.get("beat"):
+                beats.append(current)
+            current = {"episode": _episode_target_to_id(target.group(1))}
+            continue
+        if current is not None and line.startswith("beat:"):
+            current["beat"] = line.split(":", 1)[1].strip().strip("\"'")
+            continue
+        if current is not None and line.startswith("status:"):
+            current["status"] = line.split(":", 1)[1].strip().strip("\"'")
+            continue
+        item = re.match(r"-\s*(S\d+E\d+)\s+\[([^\]]+)\]\s+(.+)$", line, flags=re.IGNORECASE)
+        if item:
+            beats.append({"episode": item.group(1).upper(), "status": item.group(2), "beat": item.group(3)})
+    if current and current.get("beat"):
+        beats.append(current)
+    return beats
+
+
+def _episode_target_to_id(value: str) -> str:
+    cleaned = value.strip().strip("\"'")
+    if re.match(r"^S\d+E\d+$", cleaned, flags=re.IGNORECASE):
+        return cleaned.upper()
+    if cleaned.isdigit():
+        return f"S01E{int(cleaned):02d}"
+    return cleaned
+
+
+def _beats_for_episode(beats: object, episode_id: str | None) -> list[dict[str, str]]:
+    if not episode_id:
+        return list(beats) if isinstance(beats, list) else []
+    return [beat for beat in beats if isinstance(beat, dict) and beat.get("episode", "").upper() == episode_id.upper()]
+
+
+def _format_current_arcs(vault: Path, episode_id: str) -> str:
+    lines = [f"Current arcs for {episode_id}:"]
+    found = False
+    for arc in _arc_summaries(vault):
+        relevant = _beats_for_episode(arc["beats"], episode_id)
+        if not relevant:
+            continue
+        found = True
+        lines.append(f"{arc['slug']}: {arc['title']}")
+        for beat in relevant:
+            status = beat.get("status", "planned")
+            lines.append(f"  - [{status}] {beat.get('beat', '')}")
+    if not found:
+        lines.append("No episode-specific arc beats yet.")
+        lines.append(f"Add one: showbible arcs add \"Pilot tests the season theme\" --episode {episode_id}")
+    return "\n".join(lines) + "\n"
+
+
+def _format_current_cast(vault: Path, episode_id: str | None = None) -> str:
+    people_by_slug = {person["slug"]: person for person in people(vault)}
+    roles = effective_cast_roles(vault, episode_id)
+    scope = f"episode {episode_id}" if episode_id else "show"
+    lines = [f"Current cast ({scope}):"]
+    if not roles:
+        lines.append("No cast roles set.")
+        return "\n".join(lines) + "\n"
+    for role in roles:
+        display = people_by_slug.get(role.person, {}).get("display_name", role.person)
+        plays = f" as {role.plays}" if role.plays else ""
+        lines.append(f"  - {role.kind}: {role.person} ({display}){plays}")
+    return "\n".join(lines) + "\n"
+
+
+def _print_workflow_snapshot(vault: Path, episode_id: str, provider: str) -> None:
+    print(f"ShowBible workflow for {episode_id}")
+    print("")
+    print("Minimum needed:")
+    print(f"  [x] Vault: {vault}")
+    print(f"  [x] Episode folder: {ensure_episode(vault, episode_id)}")
+    print(f"  [x] Current cast visible: showbible cast list --episode {episode_id}")
+    print(f"  [x] Current arcs visible: showbible arcs current --episode {episode_id}")
+    print("")
+    print(_format_current_cast(vault, episode_id).rstrip())
+    print("")
+    print(_format_current_arcs(vault, episode_id).rstrip())
+    print("")
+    print("Next commands:")
+    print("  showbible cast suggest --pick")
+    print(f"  showbible cast suggest --episode {episode_id} --pick")
+    print(f"  showbible arcs add \"Pilot tests the season theme\" --episode {episode_id}")
+    print(f"  showbible run --episode {episode_id} --provider {provider}")
+
+
+def _workflow_tui(vault: Path, episode_id: str, provider: str) -> int:
+    actions = [
+        ("Show minimum workflow snapshot", "snapshot"),
+        ("Suggest show cast", "suggest-show"),
+        (f"Suggest {episode_id} cast overrides", "suggest-episode"),
+        (f"Add starter arc beat for {episode_id}", "arc"),
+        (f"Run {episode_id}", "run"),
+        ("Quit", "quit"),
+    ]
+    selected = 0
+
+    def draw(screen: "curses.window") -> str:
+        nonlocal selected
+        curses.curs_set(0)
+        screen.keypad(True)
+        while True:
+            screen.erase()
+            height, width = screen.getmaxyx()
+            screen.addnstr(0, 0, f"ShowBible workflow - {episode_id}", width - 1, curses.A_BOLD)
+            screen.addnstr(1, 0, "up/down or k/j move  enter run  q quit", width - 1)
+            preview = [
+                f"vault: {vault}",
+                f"episodes: {', '.join(list_episodes(vault)) or 'none'}",
+                f"cast roles: {len(effective_cast_roles(vault, episode_id))}",
+            ]
+            for index, line in enumerate(preview[: max(0, height - 10)]):
+                screen.addnstr(3 + index, 0, line, width - 1)
+            start = 7
+            for index, (label, _action) in enumerate(actions[: max(0, height - start - 1)]):
+                attr = curses.A_REVERSE if index == selected else curses.A_NORMAL
+                screen.addnstr(start + index, 0, label, width - 1, attr)
+            key = screen.getch()
+            if key in (ord("q"), 27):
+                return "quit"
+            if key in (curses.KEY_DOWN, ord("j")):
+                selected = min(len(actions) - 1, selected + 1)
+            elif key in (curses.KEY_UP, ord("k")):
+                selected = max(0, selected - 1)
+            elif key in (curses.KEY_ENTER, 10, 13):
+                return actions[selected][1]
+
+    action = curses.wrapper(draw)
+    if action == "snapshot":
+        _print_workflow_snapshot(vault, episode_id, provider)
+    elif action == "suggest-show":
+        return cmd_cast_suggest(
+            argparse.Namespace(
+                vault=str(vault),
+                episode=None,
+                show=None,
+                provider=provider,
+                limit=6,
+                apply=False,
+                pick=True,
+                json=False,
+                show_name=None,
+            )
+        )
+    elif action == "suggest-episode":
+        return cmd_cast_suggest(
+            argparse.Namespace(
+                vault=str(vault),
+                episode=episode_id,
+                show=None,
+                provider=provider,
+                limit=6,
+                apply=False,
+                pick=True,
+                json=False,
+                show_name=None,
+            )
+        )
+    elif action == "arc":
+        return cmd_arcs_add(
+            argparse.Namespace(
+                vault=str(vault),
+                episode=episode_id,
+                arc="season-theme",
+                status="planned",
+                beat="Pilot tests the season theme.",
+            )
+        )
+    elif action == "run":
+        return cmd_run(
+            argparse.Namespace(
+                vault=str(vault),
+                episode=episode_id,
+                season=False,
+                provider=provider,
+                note=[],
+                speak_as=[],
+                keep_going=False,
+            )
+        )
     return 0
 
 
@@ -855,6 +1208,10 @@ def cmd_episode_show(args: argparse.Namespace) -> int:
     for item in overrides:
         plays = f" as {item.get('plays')}" if item.get("plays") else ""
         print(f"  {item.get('kind', 'actor')}: {item.get('person')}{plays}")
+    print("")
+    print(_format_current_cast(vault, args.episode_id).rstrip())
+    print("")
+    print(_format_current_arcs(vault, args.episode_id).rstrip())
     return 0
 
 
@@ -866,9 +1223,11 @@ def cmd_episode_fork(args: argparse.Namespace) -> int:
     return 0
 
 
-def _write_room_state(vault: Path, status: str) -> None:
+def _write_room_state(vault: Path, status: str, episode_id: str | None = None) -> None:
     state = read_json(vault / ".room" / "state.json", {"schema": 1})
     state["status"] = status
+    if episode_id:
+        state["current_episode"] = episode_id
     atomic_write_json(vault / ".room" / "state.json", state)
 
 

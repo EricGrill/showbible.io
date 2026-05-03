@@ -112,6 +112,10 @@ def test_cli_smoke_commands(tmp_path: Path, capsys: pytest.CaptureFixture[str]) 
     assert main(["lore", "add", "--vault", str(vault), "The bridge has a secret door.", "--source", "S01E01"]) == 0
     assert main(["lore", "show", "--vault", str(vault)]) == 0
     assert main(["arcs", "--vault", str(vault)]) == 0
+    assert main(["arcs", "list", "--vault", str(vault), "--episode", "S01E01"]) == 0
+    assert main(["arcs", "current", "--vault", str(vault), "--episode", "S01E01"]) == 0
+    assert main(["arcs", "add", "--vault", str(vault), "The pilot sharpens the season question.", "--episode", "S01E01"]) == 0
+    assert main(["arcs", "show", "--vault", str(vault), "season-theme"]) == 0
     assert main(["cost", "--vault", str(vault), "--json"]) == 0
     assert main(["attach", "--vault", str(vault), "--once"]) == 0
 
@@ -120,6 +124,8 @@ def test_cli_smoke_commands(tmp_path: Path, capsys: pytest.CaptureFixture[str]) 
     assert "Ran S01E01" in output
     assert "The bridge has a secret door." in output
     assert "lore-bible/canon.md" in output
+    assert "Arc context for S01E01" in output
+    assert "The pilot sharpens the season question." in output
     assert "Doctor clean" in output
     assert "ShowBible" not in output or "S01E01" in output
 
@@ -172,8 +178,10 @@ def test_episode_and_cast_commands(tmp_path: Path, capsys: pytest.CaptureFixture
     assert main(["cast", "remove", "--vault", str(vault), "lead-actor"]) == 0
     assert main(["pack", "list", "--vault", str(vault)]) == 0
     assert main(["pack", "add", "--vault", str(vault), "Star Trek"]) == 0
+    assert main(["workflow", "--vault", str(vault), "--episode", "S01E01", "--provider", "mock", "--no-tui"]) == 0
+    assert main(["tui", "--vault", str(vault), "--episode", "S01E01", "--provider", "mock", "--no-tui"]) == 0
 
-    assert list_episodes(vault) == ["S01E02", "S01E02-alt"]
+    assert list_episodes(vault) == ["S01E01", "S01E02", "S01E02-alt"]
     role_slugs = {role.person for role in cast_roles(vault)}
     assert "patrick-stewart" in role_slugs
     assert "lead-actor" not in role_slugs
@@ -183,6 +191,24 @@ def test_episode_and_cast_commands(tmp_path: Path, capsys: pytest.CaptureFixture
     assert "showrunner" in output
     assert "lore-keeper" in output
     assert "Star Trek" in output
+    assert "ShowBible workflow for S01E01" in output
+    assert "Current cast (episode S01E01)" in output
+    assert "Current arcs for S01E01" in output
+
+
+def test_arcs_follow_current_episode_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    vault = init_vault(tmp_path / "demo")
+    episode = vault / "episodes" / "S01E07"
+    episode.mkdir(parents=True)
+    monkeypatch.chdir(episode)
+
+    assert main(["arcs", "add", "The episode pays off a hidden debt."]) == 0
+    assert main(["arcs", "current"]) == 0
+
+    output = capsys.readouterr().out
+    assert "S01E07 [planned]" in output
+    assert "Current arcs for S01E07" in output
+    assert "hidden debt" in (vault / "arcs" / "season-theme.md").read_text(encoding="utf-8")
 
 
 def test_cast_scope_follows_current_episode_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -311,11 +337,15 @@ def test_help_topics_are_detailed(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["help", "roles"]) == 0
     assert main(["help", "tui"]) == 0
     assert main(["help", "lore"]) == 0
+    assert main(["help", "arcs"]) == 0
+    assert main(["help", "workflow"]) == 0
 
     output = capsys.readouterr().out
     assert "showbible cast suggest --pick" in output
     assert "lore-keeper" in output
     assert "showbible lore add" in output
+    assert "showbible arcs current" in output
+    assert "showbible workflow --episode S01E01" in output
     assert "space" in output
 
 
