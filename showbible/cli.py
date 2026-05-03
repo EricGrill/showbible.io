@@ -9,9 +9,11 @@ import os
 import re
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
-from .engine import run_episode
+from .engine import PHASES, run_episode
 from .providers import ProviderError, resolve_provider
 from .server import serve, status_payload, transcript_text
 from .vault import (
@@ -132,6 +134,8 @@ Use the guided workflow TUI as a persistent show dashboard:
 It stays open until you press q. The dashboard can create/select episodes,
 add show or episode cast, apply AI cast suggestions, add arc beats, add lore
 facts, run the selected episode, and run doctor.
+Run opens a live phase screen with current phase, skipped/completed phases, and
+model-wait messages before each generation call.
 
 Cast suggestions also use a TUI automatically when stdout/stdin are real terminals.
 You can force cast picking with:
@@ -775,16 +779,114 @@ def _workflow_tui(vault: Path, episode_id: str, provider: str) -> int:
                 action = actions[selected][1]
                 if action == "quit":
                     return 0
-                state["episode_id"], state["message"] = _run_dashboard_action(
-                    vault,
-                    state["episode_id"],
-                    action,
-                    provider,
-                    prompt=lambda label, default="": _prompt_dashboard_line(screen, label, default),
-                )
+                if action == "run":
+                    state["message"] = _run_dashboard_live(screen, vault, state["episode_id"], provider)
+                else:
+                    state["episode_id"], state["message"] = _run_dashboard_action(
+                        vault,
+                        state["episode_id"],
+                        action,
+                        provider,
+                        prompt=lambda label, default="": _prompt_dashboard_line(screen, label, default),
+                    )
         return 0
 
     return curses.wrapper(draw)
+
+
+def _run_dashboard_live(screen: "curses.window", vault: Path, episode_id: str, provider: str) -> str:
+    events: list[str] = []
+    result: dict[str, object] = {"done": False, "message": "", "error": None}
+    lock = threading.Lock()
+
+    def progress(event: str, phase: str, payload: dict[str, object]) -> None:
+        line = _format_run_event(event, phase, payload)
+        if not line:
+            return
+        with lock:
+            events.append(line)
+
+    def worker() -> None:
+        try:
+            run = run_episode(vault, episode_id, provider, progress=progress)
+            result["message"] = (
+                f"Ran {run.episode_id}: {len(run.completed_phases)} phase(s), "
+                f"{len(run.skipped_phases)} skipped, {run.tokens} token(s)."
+            )
+        except Exception as exc:  # noqa: BLE001 - surface runtime failure inside dashboard
+            result["error"] = exc
+        finally:
+            result["done"] = True
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    spinner = "|/-\\"
+    tick = 0
+    screen.nodelay(True)
+    try:
+        while not result["done"]:
+            _draw_run_progress(screen, vault, episode_id, events, f"Running {spinner[tick % len(spinner)]}")
+            tick += 1
+            time.sleep(0.15)
+        message = str(result["message"] or "")
+        if result["error"]:
+            message = f"Run failed: {result['error']}"
+        with lock:
+            if message:
+                events.append(message)
+        _draw_run_progress(screen, vault, episode_id, events, "Complete. Press any key to return.")
+        screen.nodelay(False)
+        screen.getch()
+        return message
+    finally:
+        screen.nodelay(False)
+
+
+def _format_run_event(event: str, phase: str, payload: dict[str, object]) -> str:
+    if event == "episode-started":
+        return f"Starting {phase} with provider {payload.get('provider', 'unknown')}."
+    if event == "started":
+        return f"Starting phase: {phase}. Waiting for model output..."
+    if event == "completed":
+        return f"Completed phase: {phase} ({payload.get('tokens', 0)} token(s))."
+    if event == "skipped":
+        return f"Skipped phase: {phase} (already complete)."
+    if event == "episode-completed":
+        return f"Episode complete: {phase}."
+    return ""
+
+
+def _draw_run_progress(
+    screen: "curses.window",
+    vault: Path,
+    episode_id: str,
+    events: list[str],
+    status: str,
+) -> None:
+    screen.erase()
+    height, width = screen.getmaxyx()
+    meta = read_json(vault / "episodes" / episode_id / "meta.json", {})
+    completed = set(meta.get("completed_phases", []))
+    current = meta.get("current_phase")
+    screen.addnstr(0, 0, f"Running {episode_id}", width - 1, curses.A_BOLD)
+    screen.addnstr(1, 0, status, width - 1)
+    screen.addnstr(3, 0, "Phases:", width - 1, curses.A_BOLD)
+    for index, phase in enumerate(PHASES):
+        if phase in completed:
+            marker = "[x]"
+        elif phase == current:
+            marker = "[>]"
+        else:
+            marker = "[ ]"
+        screen.addnstr(4 + index, 0, f"{marker} {phase}", width - 1)
+    log_y = 5 + len(PHASES)
+    screen.addnstr(log_y, 0, "Live log:", width - 1, curses.A_BOLD)
+    visible = events[-max(1, height - log_y - 2) :]
+    for index, line in enumerate(visible):
+        if log_y + 1 + index >= height:
+            break
+        screen.addnstr(log_y + 1 + index, 0, line, width - 1)
+    screen.refresh()
 
 
 def _dashboard_actions(episode_id: str) -> list[tuple[str, str]]:

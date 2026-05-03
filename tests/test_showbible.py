@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from showbible.cli import _run_dashboard_action, main
+from showbible.cli import _format_run_event, _run_dashboard_action, main
 from showbible.engine import PHASES, _phase_prompt, run_episode
 from showbible.providers import LMStudioProvider, ProviderError, resolve_provider
 from showbible.server import make_server, serve, status_payload, transcript_text
@@ -40,12 +40,14 @@ def test_init_refuses_non_empty_directory(tmp_path: Path) -> None:
 
 def test_mock_episode_run_writes_pipeline_outputs(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "demo")
+    progress_events = []
     result = run_episode(
         vault,
         "S01E01",
         "mock",
         notes=["More emotional cost."],
         speak_as=["director:Keep the camera honest."],
+        progress=lambda event, phase, payload: progress_events.append((event, phase, payload)),
     )
     episode = vault / "episodes" / "S01E01"
 
@@ -62,6 +64,9 @@ def test_mock_episode_run_writes_pipeline_outputs(tmp_path: Path) -> None:
         encoding="utf-8"
     )
     assert "S01E01 continuity check" in (vault / "lore-bible" / "canon.md").read_text(encoding="utf-8")
+    assert ("started", "pitch") in [(event, phase) for event, phase, _payload in progress_events]
+    assert ("completed", "continuity-check") in [(event, phase) for event, phase, _payload in progress_events]
+    assert progress_events[-1][0] == "episode-completed"
 
 
 def test_mock_episode_resume_skips_completed_phases(tmp_path: Path) -> None:
@@ -292,6 +297,12 @@ def test_dashboard_actions_construct_show_without_leaving_workflow(tmp_path: Pat
 
     assert episode_id == "S01E03"
     assert message == "Doctor clean."
+
+
+def test_run_progress_event_text_is_visible() -> None:
+    assert _format_run_event("started", "pitch", {}) == "Starting phase: pitch. Waiting for model output..."
+    assert _format_run_event("completed", "pitch", {"tokens": 12}) == "Completed phase: pitch (12 token(s))."
+    assert _format_run_event("skipped", "break", {}) == "Skipped phase: break (already complete)."
 
 
 def test_cast_scope_follows_current_episode_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

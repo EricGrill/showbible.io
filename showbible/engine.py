@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .providers import Provider, resolve_provider
 from .vault import (
@@ -61,6 +61,7 @@ def run_episode(
     provider_name: str | None = None,
     notes: list[str] | None = None,
     speak_as: list[str] | None = None,
+    progress: Callable[[str, str, dict[str, Any]], None] | None = None,
 ) -> RunResult:
     provider = resolve_provider(provider_name)
     episode = ensure_episode(vault, episode_id)
@@ -70,6 +71,7 @@ def run_episode(
     meta["status"] = "running"
     write_episode_meta(episode, meta)
     _write_session_state(vault, episode_id, "running", completed)
+    _emit_progress(progress, "episode-started", episode_id, {"provider": provider.name, "completed": completed})
     skipped: list[str] = []
     total_tokens = 0
     total_dollars = 0.0
@@ -82,7 +84,14 @@ def run_episode(
     for phase in PHASES:
         if phase in completed:
             skipped.append(phase)
+            _emit_progress(progress, "skipped", phase, {"completed": completed})
             continue
+        meta["current_phase"] = phase
+        meta["status"] = "running"
+        meta.setdefault("phase_events", []).append({"phase": phase, "event": "started"})
+        write_episode_meta(episode, meta)
+        _write_session_state(vault, episode_id, "running", completed, phase)
+        _emit_progress(progress, "started", phase, {"completed": completed})
         generation = _run_phase(vault, episode, episode_id, phase, provider, meta)
         total_tokens += generation["tokens"]
         total_dollars += generation["dollars"]
@@ -93,6 +102,12 @@ def run_episode(
         meta.setdefault("phase_events", []).append({"phase": phase, "event": "completed"})
         write_episode_meta(episode, meta)
         _write_session_state(vault, episode_id, meta["status"], completed, phase)
+        _emit_progress(
+            progress,
+            "completed",
+            phase,
+            {"completed": completed, "tokens": generation["tokens"], "dollars": generation["dollars"]},
+        )
 
     if completed == PHASES:
         meta["status"] = "done"
@@ -100,6 +115,12 @@ def run_episode(
         write_episode_meta(episode, meta)
     _write_session_state(vault, episode_id, "done", completed)
     _record_cost(vault, episode_id, provider.name, total_tokens, total_dollars)
+    _emit_progress(
+        progress,
+        "episode-completed",
+        episode_id,
+        {"completed": completed, "tokens": total_tokens, "dollars": total_dollars, "skipped": skipped},
+    )
     return RunResult(
         episode_id=episode_id,
         completed_phases=completed,
@@ -107,6 +128,16 @@ def run_episode(
         tokens=total_tokens,
         dollars=total_dollars,
     )
+
+
+def _emit_progress(
+    progress: Callable[[str, str, dict[str, Any]], None] | None,
+    event: str,
+    phase: str,
+    payload: dict[str, Any],
+) -> None:
+    if progress:
+        progress(event, phase, payload)
 
 
 def infer_completed_phases(episode: Path) -> list[str]:

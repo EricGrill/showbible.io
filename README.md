@@ -48,8 +48,10 @@ showbible tui --episode S01E01
 The dashboard stays open until you press `q`. From there you can create or
 select episodes, add show-level cast, add episode cast overrides, apply AI cast
 suggestions, add arc beats, add lore facts, run the selected episode, and run
-doctor. `showbible workflow --episode S01E01 --no-tui` prints the same minimum
-checklist for scripts and noninteractive shells.
+doctor. Running an episode opens a live phase screen so you can see the current
+phase, skipped/completed phases, and model-wait status instead of staring at a
+silent terminal. `showbible workflow --episode S01E01 --no-tui` prints the same
+minimum checklist for scripts and noninteractive shells.
 
 The lower-level commands are still available when you want direct CLI control:
 
