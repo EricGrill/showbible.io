@@ -42,7 +42,7 @@ roles:
   - kind: writer
     person: staff-writer
 provider:
-  default: mock
+  default: lmstudio
   fallback: mock
 budget:
   max_dollars_per_episode: 5.00

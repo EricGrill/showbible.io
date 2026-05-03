@@ -145,7 +145,7 @@ def _write_interventions(episode: Path, meta: dict[str, Any], interventions: lis
 
 
 def _run_phase(vault: Path, episode: Path, episode_id: str, phase: str, provider: Provider, meta: dict[str, Any]) -> dict[str, float]:
-    prompt = _phase_prompt(episode, phase, meta)
+    prompt = _phase_prompt(vault, episode, phase, meta)
     generation = provider.generate(phase, episode_id, prompt)
     cast = people(vault)
     speaker = _speaker_for_phase(phase, cast)
@@ -169,8 +169,11 @@ def _run_phase(vault: Path, episode: Path, episode_id: str, phase: str, provider
     return {"tokens": generation.tokens, "dollars": generation.dollars}
 
 
-def _phase_prompt(episode: Path, phase: str, meta: dict[str, Any]) -> str:
+def _phase_prompt(vault: Path, episode: Path, phase: str, meta: dict[str, Any]) -> str:
     notes = []
+    pack = vault / "pack.yaml"
+    if pack.exists():
+        notes.append("Show pack:\n" + pack.read_text(encoding="utf-8"))
     if meta.get("interventions"):
         notes.extend(item.get("content", "") for item in meta["interventions"])
     if phase in {"break", "fast-draft", "polish"} and (episode / "pitch.md").exists():
@@ -183,6 +186,8 @@ def _phase_prompt(episode: Path, phase: str, meta: dict[str, Any]) -> str:
 def _speaker_for_phase(phase: str, cast: list[dict[str, str]]) -> dict[str, str]:
     if not cast:
         return {"slug": "showrunner", "display_name": "Showrunner"}
+    if phase in {"pitch", "room-pass", "continuity-check"}:
+        return next((person for person in cast if person["slug"] == "showrunner"), cast[0])
     if phase in {"break", "polish"}:
         return next((person for person in cast if person["slug"] == "director"), cast[0])
     if phase == "fast-draft":

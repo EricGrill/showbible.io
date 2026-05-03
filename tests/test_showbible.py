@@ -10,7 +10,8 @@ from pathlib import Path
 import pytest
 
 from showbible.cli import main
-from showbible.engine import PHASES, run_episode
+from showbible.engine import PHASES, _phase_prompt, run_episode
+from showbible.providers import LMStudioProvider, resolve_provider
 from showbible.server import make_server, serve, status_payload, transcript_text
 from showbible.vault import VaultError, atomic_write_text, doctor, init_vault, list_episodes, read_json
 
@@ -25,6 +26,7 @@ def test_init_vault_creates_documented_shape(tmp_path: Path) -> None:
     assert (vault / "episodes").is_dir()
     assert (vault / ".room" / "costs.json").is_file()
     assert doctor(vault) == []
+    assert "default: lmstudio" in (vault / "pack.yaml").read_text(encoding="utf-8")
 
 
 def test_init_refuses_non_empty_directory(tmp_path: Path) -> None:
@@ -56,6 +58,9 @@ def test_mock_episode_run_writes_pipeline_outputs(tmp_path: Path) -> None:
     assert (episode / "callbacks.yaml").is_file()
     assert "Producer note" in (episode / "writers-room" / "000-interventions.md").read_text(encoding="utf-8")
     assert "voicing director" in (episode / "writers-room" / "000-interventions.md").read_text(encoding="utf-8")
+    assert "## Showrunner (Showrunner)" in (episode / "writers-room" / "001-phase-pitch.md").read_text(
+        encoding="utf-8"
+    )
     assert "S01E01 continuity check" in (vault / "lore-bible" / "canon.md").read_text(encoding="utf-8")
 
 
@@ -205,3 +210,97 @@ def test_server_routes_smoke(tmp_path: Path) -> None:
     assert status["episodes"][0]["episode"] == "S01E01"
     assert "Showrunner" in transcript["transcript"]
     assert intervention["ok"] is True
+
+
+def test_lmstudio_provider_uses_local_openai_compatible_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = {}
+
+    class Response:
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {
+                    "choices": [{"message": {"content": "# Pitch\n\nA local model argues the episode into shape."}}],
+                    "usage": {"total_tokens": 42},
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request: urllib.request.Request, timeout: float) -> Response:
+        captured["url"] = request.full_url
+        captured["timeout"] = timeout
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    generation = LMStudioProvider(timeout=5, max_tokens=123).generate("pitch", "S01E01", "Use the note.")
+
+    assert captured["url"] == "http://127.0.0.1:1234/v1/chat/completions"
+    assert captured["timeout"] == 5
+    assert captured["body"]["model"] == "google/gemma-4-e4b"
+    assert captured["body"]["max_tokens"] == 123
+    assert captured["body"]["stream"] is False
+    assert "do not wait for more context" in captured["body"]["messages"][0]["content"]
+    assert "Use the note." in captured["body"]["messages"][1]["content"]
+    assert generation.text.startswith("# Pitch")
+    assert generation.tokens == 42
+
+
+def test_lmstudio_provider_retries_empty_completion(monkeypatch: pytest.MonkeyPatch) -> None:
+    responses = [
+        {"choices": [{"message": {"content": ""}}]},
+        {"choices": [{"message": {"content": "Recovered output."}}]},
+    ]
+    prompts = []
+
+    class Response:
+        def __init__(self, payload: dict[str, object]):
+            self.payload = payload
+
+        def __enter__(self) -> "Response":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(self.payload).encode("utf-8")
+
+    def fake_urlopen(request: urllib.request.Request, timeout: float) -> Response:
+        prompts.append(json.loads(request.data.decode("utf-8"))["messages"][1]["content"])
+        return Response(responses.pop(0))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    generation = LMStudioProvider(timeout=5).generate("pitch", "S01E01", "Use the note.")
+
+    assert generation.text == "Recovered output."
+    assert len(prompts) == 2
+    assert "previous completion was empty" in prompts[1]
+
+
+def test_default_provider_is_lmstudio() -> None:
+    assert isinstance(resolve_provider(None), LMStudioProvider)
+
+
+def test_lmstudio_provider_fallback_prompt_is_concrete() -> None:
+    prompt = LMStudioProvider()._user_prompt("pitch", "S01E00", "")
+
+    assert "Invent concrete details" in prompt
+    assert "No prior episode context" not in prompt
+
+
+def test_phase_prompt_includes_show_pack(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "demo", show_name="Prompt Show")
+    episode = vault / "episodes" / "S01E01"
+    episode.mkdir(parents=True)
+
+    prompt = _phase_prompt(vault, episode, "pitch", {"interventions": []})
+
+    assert "Show pack:" in prompt
+    assert "Prompt Show" in prompt

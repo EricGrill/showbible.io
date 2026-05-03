@@ -11,6 +11,10 @@ This repository currently contains the first v0 vertical slice:
 - `showbible status`, `doctor`, `transcript`, `lore`, `arcs`, and `cost`
   inspect the vault.
 - `showbible attach` serves a loopback-only web UI from the Python package.
+- The default provider is LM Studio at `http://127.0.0.1:1234` using
+  `google/gemma-4-e4b`; pass `--provider mock` for deterministic local tests.
+  Override with `LMSTUDIO_BASE_URL`, `LMSTUDIO_MODEL`, or
+  `LMSTUDIO_MAX_TOKENS`.
 
 ## Development
 

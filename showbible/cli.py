@@ -56,7 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_vault_flag(run)
     run.add_argument("--episode", default="S01E01")
     run.add_argument("--season", action="store_true", help="run all known episodes, or create S01E01 if none exist")
-    run.add_argument("--provider", default="mock")
+    run.add_argument("--provider", default="lmstudio")
     run.add_argument("--note", action="append", default=[])
     run.add_argument("--speak-as", action="append", default=[])
     run.add_argument("--keep-going", action="store_true", help="accepted for CLI compatibility; v0 runs synchronously")
@@ -80,7 +80,7 @@ def build_parser() -> argparse.ArgumentParser:
     cont = sub.add_parser("continue", help="resume by running the next incomplete episode")
     add_vault_flag(cont)
     cont.add_argument("--episode")
-    cont.add_argument("--provider", default="mock")
+    cont.add_argument("--provider", default="lmstudio")
     cont.set_defaults(func=cmd_continue)
 
     transcript = sub.add_parser("transcript", help="print episode transcript")
