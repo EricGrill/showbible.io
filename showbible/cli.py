@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import curses
+import curses.textpad
 import io
 import json
 import os
@@ -13,6 +14,7 @@ import threading
 import time
 from pathlib import Path
 
+from .artifacts import list_episode_artifacts, write_episode_artifact
 from .engine import PHASES, run_episode
 from .providers import ProviderError, resolve_provider
 from .server import serve, status_payload, transcript_text
@@ -88,6 +90,10 @@ Commands:
   showbible run --episode S01E01
   showbible continue
 
+Generated output is available from the TUI dashboard under View/edit outputs,
+and from the web UI artifact tabs: Pitch, Beats, drafts, Script, Callbacks,
+and transcript files.
+
 Episode folders can override show-level cast:
   cd episodes/S01E01
   showbible cast add "Guest Director" --kind director
@@ -136,6 +142,8 @@ add show or episode cast, apply AI cast suggestions, add arc beats, add lore
 facts, run the selected episode, and run doctor.
 Run opens a live phase screen with current phase, skipped/completed phases, and
 model-wait messages before each generation call.
+View/edit outputs opens the selected episode's pitch, beats, drafts, script,
+callbacks, and transcript files without leaving the dashboard.
 
 Cast suggestions also use a TUI automatically when stdout/stdin are real terminals.
 You can force cast picking with:
@@ -781,6 +789,8 @@ def _workflow_tui(vault: Path, episode_id: str, provider: str) -> int:
                     return 0
                 if action == "run":
                     state["message"] = _run_dashboard_live(screen, vault, state["episode_id"], provider)
+                elif action == "outputs":
+                    state["message"] = _episode_outputs_tui(screen, vault, state["episode_id"])
                 else:
                     state["episode_id"], state["message"] = _run_dashboard_action(
                         vault,
@@ -900,6 +910,7 @@ def _dashboard_actions(episode_id: str) -> list[tuple[str, str]]:
         (f"AI suggest {episode_id} cast (apply)", "suggest-episode-apply"),
         (f"Add {episode_id} arc beat", "arc-add"),
         (f"Add {episode_id} lore fact", "lore-add"),
+        (f"View/edit {episode_id} outputs", "outputs"),
         (f"Run {episode_id}", "run"),
         ("Doctor", "doctor"),
         ("Quit", "quit"),
@@ -987,6 +998,10 @@ def _run_dashboard_action(
             argparse.Namespace(vault=str(vault), fact=fact, source=episode_id),
         )
         return episode_id, output
+    if action == "outputs":
+        artifacts = list_episode_artifacts(vault, episode_id)
+        existing = [artifact for artifact in artifacts if artifact["exists"]]
+        return episode_id, f"{len(existing)} output artifact(s) available for {episode_id}."
     if action == "run":
         output = _capture_cli_output(
             cmd_run,
@@ -1007,6 +1022,85 @@ def _run_dashboard_action(
             return episode_id, "Doctor clean."
         return episode_id, "\n".join(f"{item.level}: {item.path}: {item.message}" for item in findings)
     return episode_id, "No action."
+
+
+def _episode_outputs_tui(screen: "curses.window", vault: Path, episode_id: str) -> str:
+    selected = 0
+    top_line = 0
+    message = "enter opens, e edits, q returns"
+    while True:
+        artifacts = list_episode_artifacts(vault, episode_id)
+        selected = min(selected, max(0, len(artifacts) - 1))
+        screen.erase()
+        height, width = screen.getmaxyx()
+        menu_width = max(26, min(38, width // 3))
+        screen.addnstr(0, 0, f"Episode outputs - {episode_id}", width - 1, curses.A_BOLD)
+        screen.addnstr(1, 0, message, width - 1)
+        for index, artifact in enumerate(artifacts[: max(0, height - 4)]):
+            marker = "*" if artifact["exists"] else " "
+            attr = curses.A_REVERSE if index == selected else curses.A_NORMAL
+            screen.addnstr(index + 3, 0, f"{marker} {artifact['label']}", menu_width - 1, attr)
+        panel_x = min(menu_width + 2, width - 1)
+        panel_width = max(1, width - panel_x)
+        artifact = artifacts[selected] if artifacts else None
+        if artifact:
+            lines = str(artifact["content"] or "No content yet.").splitlines() or ["No content yet."]
+            header = f"{artifact['label']} - {artifact['path']}"
+            screen.addnstr(3, panel_x, header, panel_width - 1, curses.A_BOLD)
+            max_body = max(0, height - 5)
+            top_line = min(top_line, max(0, len(lines) - max_body))
+            for index, line in enumerate(lines[top_line : top_line + max_body]):
+                screen.addnstr(index + 4, panel_x, line, panel_width - 1)
+        key = screen.getch()
+        if key in (ord("q"), 27):
+            return "Returned from episode outputs."
+        if key in (curses.KEY_DOWN, ord("j")):
+            selected = min(len(artifacts) - 1, selected + 1)
+            top_line = 0
+        elif key in (curses.KEY_UP, ord("k")):
+            selected = max(0, selected - 1)
+            top_line = 0
+        elif key in (curses.KEY_NPAGE, ord("J")):
+            top_line += max(1, height - 6)
+        elif key in (curses.KEY_PPAGE, ord("K")):
+            top_line = max(0, top_line - max(1, height - 6))
+        elif key in (curses.KEY_ENTER, 10, 13, ord("e")) and artifact:
+            saved = _edit_episode_artifact_tui(screen, vault, episode_id, str(artifact["id"]), str(artifact["content"]))
+            message = saved
+
+
+def _edit_episode_artifact_tui(
+    screen: "curses.window",
+    vault: Path,
+    episode_id: str,
+    artifact_id: str,
+    content: str,
+) -> str:
+    height, width = screen.getmaxyx()
+    edit_height = max(5, height - 5)
+    edit_width = max(20, width - 2)
+    buffer_lines = content.splitlines() or [""]
+    buffer_lines = buffer_lines[: edit_height - 1]
+    screen.erase()
+    screen.addnstr(0, 0, f"Editing {artifact_id} - Ctrl-G saves, Esc cancels", width - 1, curses.A_BOLD)
+    win = curses.newwin(edit_height, edit_width, 2, 1)
+    win.keypad(True)
+    for index, line in enumerate(buffer_lines):
+        win.addnstr(index, 0, line, edit_width - 1)
+    box = curses.textpad.Textbox(win, insert_mode=True)
+    try:
+        updated = box.edit(_episode_edit_validator)
+    except KeyboardInterrupt:
+        return "Edit cancelled."
+    updated = updated.rstrip() + "\n"
+    write_episode_artifact(vault, episode_id, artifact_id, updated)
+    return f"Saved {artifact_id}."
+
+
+def _episode_edit_validator(key: int) -> int:
+    if key == 27:
+        raise KeyboardInterrupt
+    return key
 
 
 def _dashboard_prompt(prompt: object | None, label: str, default: str = "") -> str | None:

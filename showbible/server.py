@@ -6,6 +6,7 @@ from importlib import resources
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+from .artifacts import episode_output_payload, read_episode_artifact, write_episode_artifact
 from .vault import append_transcript_entry, doctor, episode_meta, list_episodes, people, read_json
 
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -48,11 +49,26 @@ class ShowBibleHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             episode = query.get("episode", [None])[0]
             self._send_json({"episode": episode, "transcript": transcript_text(self.vault_path, episode)})
+        elif parsed.path == "/api/episode":
+            query = parse_qs(parsed.query)
+            episode = query.get("episode", [None])[0] or (list_episodes(self.vault_path) or ["S01E01"])[0]
+            self._send_json(episode_output_payload(self.vault_path, episode))
+        elif parsed.path == "/api/artifact":
+            query = parse_qs(parsed.query)
+            episode = query.get("episode", [None])[0] or (list_episodes(self.vault_path) or ["S01E01"])[0]
+            artifact = query.get("artifact", [None])[0]
+            if not artifact:
+                self.send_error(400, "artifact required")
+                return
+            self._send_json(read_episode_artifact(self.vault_path, episode, artifact))
         else:
             self.send_error(404)
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/artifact":
+            self._handle_artifact_post()
+            return
         if parsed.path != "/api/intervene":
             self.send_error(404)
             return
@@ -68,6 +84,22 @@ class ShowBibleHandler(BaseHTTPRequestHandler):
         role = "Producer note" if kind == "note" else "Guest Writer"
         append_transcript_entry(target, "user", role, content, intervention=True)
         self._send_json({"ok": True, "intervention": {"kind": kind, "content": content}})
+
+    def _handle_artifact_post(self) -> None:
+        length = int(self.headers.get("content-length", "0"))
+        payload = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
+        episode = str(payload.get("episode") or (list_episodes(self.vault_path) or ["S01E01"])[0])
+        artifact = str(payload.get("artifact") or "")
+        content = str(payload.get("content") or "")
+        if not artifact:
+            self.send_error(400, "artifact required")
+            return
+        try:
+            saved = write_episode_artifact(self.vault_path, episode, artifact, content)
+        except Exception as exc:
+            self.send_error(400, str(exc))
+            return
+        self._send_json({"ok": True, "episode": episode, "artifact": saved})
 
     def log_message(self, fmt: str, *args: object) -> None:
         return
@@ -124,7 +156,7 @@ def smoke_payload(vault: Path) -> dict[str, object]:
         "vault": str(vault),
         "episodes": list_episodes(vault),
         "ui_bytes": len(ui.encode("utf-8")),
-        "routes": ["/", "/api/status", "/api/transcript", "/api/intervene"],
+        "routes": ["/", "/api/status", "/api/episode", "/api/artifact", "/api/transcript", "/api/intervene"],
         "status": status_payload(vault),
     }
 

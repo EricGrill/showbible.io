@@ -50,8 +50,17 @@ select episodes, add show-level cast, add episode cast overrides, apply AI cast
 suggestions, add arc beats, add lore facts, run the selected episode, and run
 doctor. Running an episode opens a live phase screen so you can see the current
 phase, skipped/completed phases, and model-wait status instead of staring at a
-silent terminal. `showbible workflow --episode S01E01 --no-tui` prints the same
-minimum checklist for scripts and noninteractive shells.
+silent terminal. `View/edit outputs` opens the selected episode's pitch, beats,
+drafts, script, callbacks, and transcript files in the TUI. `showbible workflow
+--episode S01E01 --no-tui` prints the same minimum checklist for scripts and
+noninteractive shells.
+
+The web UI exposes the same episode output artifacts as tabs with an editor and
+Save button:
+
+```bash
+showbible attach --vault /tmp/showbible-demo --port 8765
+```
 
 The lower-level commands are still available when you want direct CLI control:
 

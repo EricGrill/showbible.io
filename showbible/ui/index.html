@@ -5,21 +5,52 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>ShowBible</title>
   <style>
-    :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { margin: 0; background: #f6f5f1; color: #191a1d; }
-    header { display: flex; gap: 16px; align-items: center; justify-content: space-between; padding: 12px 18px; background: #20242b; color: white; }
-    main { display: grid; grid-template-columns: 220px minmax(0, 1fr) 280px; min-height: calc(100vh - 52px); }
-    aside, section { padding: 16px; border-right: 1px solid #d8d6ce; }
-    aside:last-child { border-right: 0; border-left: 1px solid #d8d6ce; }
-    h1, h2 { margin: 0 0 12px; font-size: 18px; }
-    h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0; color: #555b64; }
-    button { border: 1px solid #20242b; background: #20242b; color: white; padding: 8px 10px; border-radius: 6px; cursor: pointer; }
-    textarea { box-sizing: border-box; width: 100%; min-height: 90px; resize: vertical; border: 1px solid #b9b5aa; border-radius: 6px; padding: 8px; font: inherit; }
-    pre { white-space: pre-wrap; background: white; border: 1px solid #d8d6ce; border-radius: 8px; padding: 14px; min-height: 70vh; overflow: auto; }
-    .cast { display: grid; gap: 8px; }
-    .person { padding: 8px; background: white; border: 1px solid #d8d6ce; border-radius: 6px; }
+    :root {
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --ink: #17181c;
+      --muted: #5e6470;
+      --line: #d4d7dd;
+      --surface: #f7f7f4;
+      --panel: #ffffff;
+      --accent: #1e5b4f;
+      --warn: #8a4b18;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--surface); color: var(--ink); }
+    header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; background: #20242b; color: #fff; }
+    h1 { margin: 0; font-size: 17px; font-weight: 700; }
+    h2 { margin: 0; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0; }
+    main { display: grid; grid-template-columns: 210px minmax(0, 1fr) 280px; min-height: calc(100vh - 44px); }
+    aside, section { min-width: 0; padding: 12px; border-right: 1px solid var(--line); }
+    aside:last-child { border-right: 0; border-left: 1px solid var(--line); }
+    button, select { font: inherit; }
+    button { border: 1px solid #29313a; background: #29313a; color: #fff; min-height: 32px; padding: 6px 10px; border-radius: 6px; cursor: pointer; }
+    button.secondary { background: var(--panel); color: var(--ink); border-color: var(--line); }
+    button.active { background: var(--accent); border-color: var(--accent); }
+    button:disabled { opacity: .55; cursor: default; }
+    select { width: 100%; min-height: 34px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); padding: 4px 8px; }
+    textarea { width: 100%; height: calc(100vh - 190px); min-height: 360px; resize: none; border: 1px solid var(--line); border-radius: 6px; padding: 12px; background: var(--panel); color: var(--ink); font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    pre { margin: 0; white-space: pre-wrap; font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .stack { display: grid; gap: 10px; }
-    @media (max-width: 860px) { main { grid-template-columns: 1fr; } aside, section, aside:last-child { border: 0; border-bottom: 1px solid #d8d6ce; } pre { min-height: 40vh; } }
+    .row { display: flex; align-items: center; gap: 8px; }
+    .row > * { min-width: 0; }
+    .spread { justify-content: space-between; }
+    .episodes, .artifacts, .cast { display: grid; gap: 6px; }
+    .list-button { width: 100%; text-align: left; background: var(--panel); color: var(--ink); border-color: var(--line); }
+    .list-button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .artifact-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 6px; }
+    .person, .meta-line { padding: 7px 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+    .muted { color: var(--muted); }
+    .warn { color: var(--warn); }
+    .editor-head { display: grid; gap: 8px; margin-bottom: 10px; }
+    .status { min-height: 18px; font-size: 12px; color: var(--muted); }
+    .note { min-height: 90px; resize: vertical; font-family: inherit; }
+    @media (max-width: 940px) {
+      main { grid-template-columns: 1fr; }
+      aside, section, aside:last-child { border: 0; border-bottom: 1px solid var(--line); }
+      textarea { height: 50vh; min-height: 280px; }
+    }
   </style>
 </head>
 <body>
@@ -28,43 +59,151 @@
     <span id="summary">loading...</span>
   </header>
   <main>
-    <aside>
-      <h2>Cast</h2>
-      <div id="cast" class="cast"></div>
+    <aside class="stack">
+      <div class="stack">
+        <h2>Episodes</h2>
+        <div id="episodes" class="episodes"></div>
+      </div>
+      <div class="stack">
+        <h2>Cast</h2>
+        <div id="cast" class="cast"></div>
+      </div>
     </aside>
     <section>
-      <h2>Transcript</h2>
-      <pre id="transcript"></pre>
+      <div class="editor-head">
+        <div class="row spread">
+          <h2 id="artifact-title">Episode Output</h2>
+          <div class="row">
+            <button id="refresh" class="secondary">Refresh</button>
+            <button id="save">Save</button>
+          </div>
+        </div>
+        <div id="artifacts" class="artifact-grid"></div>
+        <div id="editor-status" class="status"></div>
+      </div>
+      <textarea id="editor" spellcheck="false"></textarea>
     </section>
-    <aside>
-      <h2>Intervene</h2>
+    <aside class="stack">
       <div class="stack">
-        <textarea id="note" placeholder="Drop a production note"></textarea>
+        <h2>Intervene</h2>
+        <textarea id="note" class="note" placeholder="Drop a production note"></textarea>
         <button id="send">Send Note</button>
       </div>
-      <h2 style="margin-top: 24px;">Context</h2>
-      <pre id="context"></pre>
+      <div class="stack">
+        <h2>Context</h2>
+        <div id="context" class="stack"></div>
+      </div>
     </aside>
   </main>
   <script>
-    async function refresh() {
-      const status = await fetch('/api/status').then(r => r.json());
-      const episode = status.episodes[0]?.episode || 'S01E01';
-      const transcript = await fetch(`/api/transcript?episode=${encodeURIComponent(episode)}`).then(r => r.json());
-      document.getElementById('summary').textContent = `${status.vault} · ${status.episodes.length} episode(s)`;
-      document.getElementById('cast').innerHTML = status.cast.map(p => `<div class="person">${p.display_name}<br><small>${p.slug}</small></div>`).join('');
-      document.getElementById('transcript').textContent = transcript.transcript || 'No transcript yet.';
-      document.getElementById('context').textContent = JSON.stringify({ episode, cost: status.cost, findings: status.findings }, null, 2);
+    let state = { status: null, episode: null, episodePayload: null, artifact: null, dirty: false };
+    const $ = id => document.getElementById(id);
+    const escapeHtml = value => String(value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+
+    async function getJSON(url, options) {
+      const response = await fetch(url, options);
+      if (!response.ok) throw new Error(await response.text());
+      return response.json();
     }
-    document.getElementById('send').addEventListener('click', async () => {
-      const content = document.getElementById('note').value.trim();
-      if (!content) return;
-      await fetch('/api/intervene', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'note', content }) });
-      document.getElementById('note').value = '';
-      await refresh();
+
+    async function refresh({ keepEditor = true } = {}) {
+      state.status = await getJSON('/api/status');
+      const episodes = state.status.episodes || [];
+      state.episode = state.episode || episodes[0]?.episode || 'S01E01';
+      await loadEpisode(state.episode, { keepEditor });
+      renderShell();
+    }
+
+    async function loadEpisode(episode, { keepEditor = false } = {}) {
+      state.episode = episode;
+      state.episodePayload = await getJSON(`/api/episode?episode=${encodeURIComponent(episode)}`);
+      const artifacts = state.episodePayload.artifacts || [];
+      if (!keepEditor || !state.artifact || !artifacts.some(item => item.id === state.artifact)) {
+        const preferred = artifacts.find(item => item.id === 'script' && item.exists) || artifacts.find(item => item.exists) || artifacts[0];
+        state.artifact = preferred?.id || null;
+        state.dirty = false;
+      }
+      renderShell();
+      renderEditor();
+    }
+
+    function renderShell() {
+      const episodes = state.status?.episodes || [];
+      $('summary').textContent = `${state.status?.vault || ''} · ${episodes.length} episode(s)`;
+      $('episodes').innerHTML = episodes.map(ep => `<button class="list-button ${ep.episode === state.episode ? 'active' : ''}" data-episode="${escapeHtml(ep.episode)}">${escapeHtml(ep.episode)}<br><small>${escapeHtml(ep.status || 'created')}</small></button>`).join('') || '<div class="muted">No episodes yet.</div>';
+      $('cast').innerHTML = (state.status?.cast || []).map(p => `<div class="person">${escapeHtml(p.display_name)}<br><small>${escapeHtml(p.slug)}</small></div>`).join('') || '<div class="muted">No cast yet.</div>';
+      const meta = state.episodePayload?.meta || {};
+      $('context').innerHTML = [
+        `<div class="meta-line">Episode: ${escapeHtml(state.episode || '')}</div>`,
+        `<div class="meta-line">Status: ${escapeHtml(meta.status || 'created')}</div>`,
+        `<div class="meta-line">Completed: ${escapeHtml((meta.completed_phases || []).join(', ') || 'none')}</div>`,
+        `<pre>${escapeHtml(JSON.stringify({ cost: state.status?.cost || {}, findings: state.status?.findings || [] }, null, 2))}</pre>`
+      ].join('');
+      document.querySelectorAll('[data-episode]').forEach(button => {
+        button.onclick = () => loadEpisode(button.dataset.episode, { keepEditor: false });
+      });
+    }
+
+    function renderEditor() {
+      const artifacts = state.episodePayload?.artifacts || [];
+      const artifact = artifacts.find(item => item.id === state.artifact) || artifacts[0];
+      $('artifacts').innerHTML = artifacts.map(item => `<button class="secondary ${item.id === artifact?.id ? 'active' : ''}" data-artifact="${escapeHtml(item.id)}">${item.exists ? '*' : ''} ${escapeHtml(item.label)}</button>`).join('');
+      document.querySelectorAll('[data-artifact]').forEach(button => {
+        button.onclick = () => {
+          if (state.dirty && !confirm('Discard unsaved edits?')) return;
+          state.artifact = button.dataset.artifact;
+          state.dirty = false;
+          renderEditor();
+        };
+      });
+      if (!artifact) {
+        $('artifact-title').textContent = 'Episode Output';
+        $('editor').value = '';
+        $('save').disabled = true;
+        return;
+      }
+      state.artifact = artifact.id;
+      $('artifact-title').textContent = `${artifact.label} · ${artifact.path}`;
+      $('editor').value = artifact.content || '';
+      $('editor').readOnly = !artifact.editable;
+      $('save').disabled = !artifact.editable;
+      $('editor-status').textContent = artifact.editable ? (artifact.exists ? 'Saved artifact loaded.' : 'New artifact. Save to create it.') : 'Read only.';
+    }
+
+    async function saveArtifact() {
+      if (!state.episode || !state.artifact) return;
+      $('save').disabled = true;
+      $('editor-status').textContent = 'Saving...';
+      const payload = await getJSON('/api/artifact', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ episode: state.episode, artifact: state.artifact, content: $('editor').value })
+      });
+      state.dirty = false;
+      $('editor-status').textContent = `Saved ${payload.artifact.path}.`;
+      await loadEpisode(state.episode, { keepEditor: true });
+    }
+
+    $('editor').addEventListener('input', () => {
+      state.dirty = true;
+      $('editor-status').textContent = 'Unsaved edits.';
     });
+    $('save').addEventListener('click', saveArtifact);
+    $('refresh').addEventListener('click', () => refresh({ keepEditor: !state.dirty }));
+    $('send').addEventListener('click', async () => {
+      const content = $('note').value.trim();
+      if (!content) return;
+      await getJSON('/api/intervene', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ episode: state.episode, type: 'note', content })
+      });
+      $('note').value = '';
+      await refresh({ keepEditor: true });
+    });
+
     refresh();
-    setInterval(refresh, 4000);
+    setInterval(() => { if (!state.dirty) refresh({ keepEditor: true }); }, 5000);
   </script>
 </body>
 </html>

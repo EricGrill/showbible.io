@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from showbible.artifacts import list_episode_artifacts, read_episode_artifact, write_episode_artifact
 from showbible.cli import _format_run_event, _run_dashboard_action, main
 from showbible.engine import PHASES, _phase_prompt, run_episode
 from showbible.providers import LMStudioProvider, ProviderError, resolve_provider
@@ -67,6 +68,25 @@ def test_mock_episode_run_writes_pipeline_outputs(tmp_path: Path) -> None:
     assert ("started", "pitch") in [(event, phase) for event, phase, _payload in progress_events]
     assert ("completed", "continuity-check") in [(event, phase) for event, phase, _payload in progress_events]
     assert progress_events[-1][0] == "episode-completed"
+
+
+def test_episode_artifacts_list_and_save_outputs(tmp_path: Path) -> None:
+    vault = init_vault(tmp_path / "demo")
+    run_episode(vault, "S01E01", "mock")
+
+    artifacts = list_episode_artifacts(vault, "S01E01")
+    artifact_ids = {artifact["id"] for artifact in artifacts}
+
+    assert {"pitch", "beats", "fast-draft", "room-pass-notes", "polish-draft", "script", "callbacks"} <= artifact_ids
+    assert "writers-room/001-phase-pitch.md" in artifact_ids
+    assert read_episode_artifact(vault, "S01E01", "script")["content"].startswith("# Script")
+
+    saved = write_episode_artifact(vault, "S01E01", "script", "# Script\n\nEdited in the UI.\n")
+
+    assert saved["content"].endswith("Edited in the UI.\n")
+    assert (vault / "episodes" / "S01E01" / "script.md").read_text(encoding="utf-8").endswith(
+        "Edited in the UI.\n"
+    )
 
 
 def test_mock_episode_resume_skips_completed_phases(tmp_path: Path) -> None:
@@ -293,6 +313,10 @@ def test_dashboard_actions_construct_show_without_leaving_workflow(tmp_path: Pat
     assert "Ran S01E03" in message
     assert read_json(vault / "episodes" / "S01E03" / "meta.json", {})["status"] == "done"
 
+    episode_id, message = _run_dashboard_action(vault, episode_id, "outputs", "mock")
+
+    assert "output artifact(s) available for S01E03" in message
+
     episode_id, message = _run_dashboard_action(vault, episode_id, "doctor", "mock")
 
     assert episode_id == "S01E03"
@@ -467,9 +491,26 @@ def test_server_routes_smoke(tmp_path: Path) -> None:
     try:
         index = urllib.request.urlopen(base + "/", timeout=2).read().decode("utf-8")
         status = json.loads(urllib.request.urlopen(base + "/api/status", timeout=2).read().decode("utf-8"))
+        episode_payload = json.loads(
+            urllib.request.urlopen(base + "/api/episode?episode=S01E01", timeout=2).read().decode("utf-8")
+        )
+        artifact = json.loads(
+            urllib.request.urlopen(base + "/api/artifact?episode=S01E01&artifact=script", timeout=2)
+            .read()
+            .decode("utf-8")
+        )
         transcript = json.loads(
             urllib.request.urlopen(base + "/api/transcript?episode=S01E01", timeout=2).read().decode("utf-8")
         )
+        save_request = urllib.request.Request(
+            base + "/api/artifact",
+            data=json.dumps(
+                {"episode": "S01E01", "artifact": "script", "content": "# Script\n\nEdited from browser.\n"}
+            ).encode("utf-8"),
+            headers={"content-type": "application/json"},
+            method="POST",
+        )
+        saved = json.loads(urllib.request.urlopen(save_request, timeout=2).read().decode("utf-8"))
         request = urllib.request.Request(
             base + "/api/intervene",
             data=json.dumps({"episode": "S01E01", "type": "note", "content": "Route smoke."}).encode("utf-8"),
@@ -483,6 +524,13 @@ def test_server_routes_smoke(tmp_path: Path) -> None:
 
     assert "<title>ShowBible</title>" in index
     assert status["episodes"][0]["episode"] == "S01E01"
+    assert episode_payload["episode"] == "S01E01"
+    assert any(item["id"] == "script" for item in episode_payload["artifacts"])
+    assert artifact["id"] == "script"
+    assert saved["artifact"]["content"].endswith("Edited from browser.\n")
+    assert (vault / "episodes" / "S01E01" / "script.md").read_text(encoding="utf-8").endswith(
+        "Edited from browser.\n"
+    )
     assert "Showrunner" in transcript["transcript"]
     assert intervention["ok"] is True
 
