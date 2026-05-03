@@ -38,9 +38,23 @@ python3 -m venv .venv
 ## CLI-Only Cast Workflow
 
 ```bash
-showbible cast list --vault /tmp/showbible-demo
-showbible cast add --vault /tmp/showbible-demo "Patrick Stewart" --kind actor --plays picard
-showbible cast suggest --vault /tmp/showbible-demo "Star Trek: The Next Generation"
-showbible cast suggest --vault /tmp/showbible-demo "Star Trek: The Next Generation" --apply
-showbible pack edit --vault /tmp/showbible-demo patrick-stewart
+cd /tmp/showbible-demo
+showbible cast list
+showbible cast add "Patrick Stewart" --kind actor --plays picard
+showbible cast suggest
+showbible cast suggest --apply
+showbible pack edit patrick-stewart
+```
+
+Cast commands infer scope from the current folder:
+
+```bash
+cd /tmp/showbible-demo
+showbible cast add "David Chase" --kind showrunner       # show-level pack cast
+
+cd /tmp/showbible-demo/episodes/S01E03
+showbible cast add "Steve Buscemi" --kind director       # episode-only override
+showbible cast suggest --apply                           # episode-only AI suggestions
+showbible cast add --show "Edie Falco" --kind actor      # force show-level from episode cwd
+showbible cast add --episode S01E05 "Guest Star"         # force a specific episode
 ```

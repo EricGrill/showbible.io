@@ -176,6 +176,69 @@ def test_episode_and_cast_commands(tmp_path: Path, capsys: pytest.CaptureFixture
     assert "Star Trek" in output
 
 
+def test_cast_scope_follows_current_episode_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    vault = init_vault(tmp_path / "demo")
+    episode = vault / "episodes" / "S01E04"
+    (episode / "drafts").mkdir(parents=True)
+    monkeypatch.chdir(episode)
+
+    assert main(["cast", "add", "Michael Imperioli", "--kind", "actor", "--plays", "christopher"]) == 0
+
+    pack_roles = {role.person for role in cast_roles(vault)}
+    episode_meta = read_json(episode / "meta.json", {})
+    assert "michael-imperioli" not in pack_roles
+    assert episode_meta["cast_overrides"] == [
+        {"kind": "actor", "person": "michael-imperioli", "plays": "christopher"}
+    ]
+
+
+def test_cast_scope_can_force_show_from_episode_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    vault = init_vault(tmp_path / "demo")
+    episode = vault / "episodes" / "S01E05"
+    episode.mkdir(parents=True)
+    monkeypatch.chdir(episode)
+
+    assert main(["cast", "add", "--show", "David Chase", "--kind", "showrunner"]) == 0
+
+    pack_roles = {role.person for role in cast_roles(vault)}
+    assert "david-chase" in pack_roles
+    assert "cast_overrides" not in read_json(episode / "meta.json", {})
+
+
+def test_cast_suggest_uses_current_show_and_episode_scope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    vault = init_vault(tmp_path / "Sopranos", show_name="The Sopranos")
+    episode = vault / "episodes" / "S01E01"
+    episode.mkdir(parents=True)
+    captured = {}
+
+    class Provider:
+        name = "capture"
+
+        def generate(self, phase: str, episode_id: str, prompt: str):
+            captured["prompt"] = prompt
+            return type(
+                "Generation",
+                (),
+                {
+                    "text": '[{"kind":"actor","person":"lorraine-bracco","display_name":"Lorraine Bracco","plays":"melfi"}]',
+                    "tokens": 0,
+                    "dollars": 0.0,
+                },
+            )()
+
+    monkeypatch.setattr("showbible.cli.resolve_provider", lambda name: Provider())
+    monkeypatch.chdir(episode)
+
+    assert main(["cast", "suggest", "--apply"]) == 0
+
+    assert "The Sopranos" in captured["prompt"]
+    assert "Episode scope: S01E01" in captured["prompt"]
+    assert read_json(episode / "meta.json", {})["cast_overrides"] == [
+        {"kind": "actor", "person": "lorraine-bracco", "plays": "melfi"}
+    ]
+    assert (vault / "episodes" / "S01E01" / "cast-suggestions.md").is_file()
+
+
 def test_server_payloads(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "demo")
     run_episode(vault, "S01E01", "mock")

@@ -256,6 +256,37 @@ def cast_roles(vault: Path) -> list[CastRole]:
     return roles
 
 
+def infer_episode_id(vault: Path, start: Path | None = None) -> str | None:
+    current = (start or Path.cwd()).resolve()
+    if current.is_file():
+        current = current.parent
+    try:
+        relative = current.relative_to((vault / "episodes").resolve())
+    except ValueError:
+        return None
+    parts = relative.parts
+    return parts[0] if parts else None
+
+
+def episode_cast_roles(vault: Path, episode_id: str) -> list[CastRole]:
+    meta = episode_meta(ensure_episode(vault, episode_id))
+    roles = []
+    for item in meta.get("cast_overrides", []):
+        if isinstance(item, dict) and item.get("person"):
+            roles.append(CastRole(str(item.get("kind") or "writer"), str(item["person"]), item.get("plays")))
+    return roles
+
+
+def effective_cast_roles(vault: Path, episode_id: str | None = None) -> list[CastRole]:
+    roles = cast_roles(vault)
+    if not episode_id:
+        return roles
+    by_person = {role.person: role for role in roles}
+    for role in episode_cast_roles(vault, episode_id):
+        by_person[role.person] = role
+    return list(by_person.values())
+
+
 def add_cast_role(vault: Path, role: CastRole) -> None:
     roles = [existing for existing in cast_roles(vault) if existing.person != role.person]
     roles.append(role)
@@ -265,6 +296,27 @@ def add_cast_role(vault: Path, role: CastRole) -> None:
 def remove_cast_role(vault: Path, person_slug: str) -> None:
     roles = [role for role in cast_roles(vault) if role.person != person_slug]
     write_cast_roles(vault, roles)
+
+
+def add_episode_cast_role(vault: Path, episode_id: str, role: CastRole) -> None:
+    roles = [existing for existing in episode_cast_roles(vault, episode_id) if existing.person != role.person]
+    roles.append(role)
+    write_episode_cast_roles(vault, episode_id, roles)
+
+
+def remove_episode_cast_role(vault: Path, episode_id: str, person_slug: str) -> None:
+    roles = [role for role in episode_cast_roles(vault, episode_id) if role.person != person_slug]
+    write_episode_cast_roles(vault, episode_id, roles)
+
+
+def write_episode_cast_roles(vault: Path, episode_id: str, roles: list[CastRole]) -> None:
+    episode = ensure_episode(vault, episode_id)
+    meta = episode_meta(episode)
+    meta["cast_overrides"] = [
+        {"kind": role.kind, "person": role.person, **({"plays": role.plays} if role.plays else {})}
+        for role in roles
+    ]
+    write_episode_meta(episode, meta)
 
 
 def write_cast_roles(vault: Path, roles: list[CastRole]) -> None:
