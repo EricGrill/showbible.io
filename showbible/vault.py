@@ -28,6 +28,15 @@ class CastRole:
     plays: str | None = None
 
 
+@dataclass(frozen=True)
+class ArcBeat:
+    arc: str
+    episode: str
+    status: str
+    beat: str
+    file: Path
+
+
 DEFAULT_PACK = """schema: 1
 show:
   name: {show_name}
@@ -484,6 +493,29 @@ def doctor(vault: Path) -> list[DoctorFinding]:
     if pack.exists() and "schema:" not in pack.read_text(encoding="utf-8"):
         findings.append(DoctorFinding("error", "pack.yaml", "pack.yaml must declare schema."))
     return findings
+
+
+def arc_beats(vault: Path) -> list[ArcBeat]:
+    arcs_dir = vault / "arcs"
+    if not arcs_dir.is_dir():
+        return []
+    pattern = re.compile(r"^-\s*(S\d+E\d+)\s+\[([^\]]+)\]\s+(.+)$", flags=re.IGNORECASE)
+    results: list[ArcBeat] = []
+    for path in sorted(arcs_dir.glob("*.md")):
+        slug = path.stem
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            match = pattern.match(raw.strip())
+            if match:
+                results.append(
+                    ArcBeat(
+                        arc=slug,
+                        episode=match.group(1).upper(),
+                        status=match.group(2).strip(),
+                        beat=match.group(3).strip(),
+                        file=path,
+                    )
+                )
+    return results
 
 
 def copy_episode(vault: Path, source_id: str, target_id: str) -> Path:

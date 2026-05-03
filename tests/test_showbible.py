@@ -672,3 +672,26 @@ def test_phase_prompt_includes_show_pack(tmp_path: Path) -> None:
 
     assert "Show pack:" in prompt
     assert "Prompt Show" in prompt
+
+
+def test_arc_beats_reads_all_arcs(tmp_path: Path) -> None:
+    from showbible.vault import arc_beats
+
+    vault = init_vault(tmp_path / "demo")
+    atomic_write_text(
+        vault / "arcs" / "season-theme.md",
+        "# Season Theme\n\n## Episode Beats\n\n- S01E01 [planned] open the season\n- S01E02 [done] turn the screw\n",
+    )
+    atomic_write_text(
+        vault / "arcs" / "ensemble.md",
+        "# Ensemble\n\n## Episode Beats\n\n- S01E01 [planned] introduce the rival\n",
+    )
+
+    beats = arc_beats(vault)
+
+    assert [(b.arc, b.episode, b.status, b.beat) for b in beats] == [
+        ("ensemble", "S01E01", "planned", "introduce the rival"),
+        ("season-theme", "S01E01", "planned", "open the season"),
+        ("season-theme", "S01E02", "done", "turn the screw"),
+    ]
+    assert beats[0].file == vault / "arcs" / "ensemble.md"
