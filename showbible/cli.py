@@ -396,7 +396,8 @@ def cmd_cast_suggest(args: argparse.Namespace) -> int:
         "Do not invent generic labels like Cast Member, TV Writer, or Director. "
         f"Return JSON only: an array of up to {args.limit} objects with keys "
         "kind, person, display_name, and optional plays. Include showrunner, director, writer, and actor roles. "
-        "Use lowercase kebab-case for person and plays. Do not include prose. "
+        "Use lowercase kebab-case for person and plays. The plays value must be one string, never an array. "
+        "Return compact complete JSON and do not include prose. "
         f"If episode scope is present, suggest additions or overrides for that episode only.\n\n"
         f"Current pack:\n{pack}{episode_context}"
     )
@@ -426,8 +427,7 @@ def cmd_cast_suggest(args: argparse.Namespace) -> int:
             slug = str(item.get("person") or slugify(str(item.get("display_name") or "person")))
             display = str(item.get("display_name") or slug.replace("-", " ").title())
             kind = str(item.get("kind") or "actor")
-            plays = item.get("plays")
-            plays_text = str(plays) if plays else None
+            plays_text = _normalize_plays(item.get("plays"))
             write_person(vault, slug, display, kind, plays_text)
             role = CastRole(kind=kind, person=slug, plays=plays_text)
             if episode_id:
@@ -465,7 +465,10 @@ def _extract_json_array(text: str) -> list[dict[str, object]]:
     start = cleaned.find("[")
     if start == -1:
         raise ValueError("AI cast suggestion did not contain a JSON array.")
-    data, _ = json.JSONDecoder().raw_decode(cleaned[start:])
+    try:
+        data, _ = json.JSONDecoder().raw_decode(cleaned[start:])
+    except json.JSONDecodeError:
+        data = _salvage_json_objects(cleaned[start:])
     if not isinstance(data, list):
         raise ValueError("AI cast suggestion must be a JSON array.")
     result = []
@@ -474,6 +477,51 @@ def _extract_json_array(text: str) -> list[dict[str, object]]:
             raise ValueError("Every cast suggestion must be an object.")
         result.append(item)
     return result
+
+
+def _salvage_json_objects(text: str) -> list[dict[str, object]]:
+    objects: list[dict[str, object]] = []
+    depth = 0
+    start: int | None = None
+    in_string = False
+    escape = False
+    for index, char in enumerate(text):
+        if in_string:
+            if escape:
+                escape = False
+            elif char == "\\":
+                escape = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0 and start is not None:
+                try:
+                    item = json.loads(text[start : index + 1])
+                except json.JSONDecodeError:
+                    start = None
+                    continue
+                if isinstance(item, dict):
+                    objects.append(item)
+                start = None
+    if not objects:
+        raise ValueError("AI cast suggestion did not contain any complete JSON objects.")
+    return objects
+
+
+def _normalize_plays(value: object) -> str | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, list):
+        return str(value[0]) if value else None
+    return str(value)
 
 
 def cmd_episode_new(args: argparse.Namespace) -> int:

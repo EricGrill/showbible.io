@@ -430,6 +430,30 @@ def test_cast_suggest_repairs_invalid_json(tmp_path: Path, monkeypatch: pytest.M
     assert (vault / "people" / "patrick-stewart.md").is_file()
 
 
+def test_cast_suggest_salvages_truncated_json_objects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    vault = init_vault(tmp_path / "demo")
+
+    class Provider:
+        name = "truncated"
+
+        def generate(self, phase: str, episode_id: str, prompt: str):
+            text = (
+                "```json\n"
+                '[{"kind":"showrunner","person":"david-chase","display_name":"David Chase"},'
+                '{"kind":"writer","person":"terence-winter","display_name":"Terence Winter","plays":["writer-room"]},'
+                '{"kind":"actor","person":"'
+            )
+            return type("Generation", (), {"text": text, "tokens": 0, "dollars": 0.0})()
+
+    monkeypatch.setattr("showbible.cli.resolve_provider", lambda name: Provider())
+
+    assert main(["cast", "suggest", "--vault", str(vault), "The Sopranos", "--apply"]) == 0
+
+    assert (vault / "people" / "david-chase.md").is_file()
+    winter = (vault / "people" / "terence-winter.md").read_text(encoding="utf-8")
+    assert "plays: writer-room" in winter
+
+
 def test_phase_prompt_includes_show_pack(tmp_path: Path) -> None:
     vault = init_vault(tmp_path / "demo", show_name="Prompt Show")
     episode = vault / "episodes" / "S01E01"
