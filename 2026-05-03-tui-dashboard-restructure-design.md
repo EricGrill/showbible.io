@@ -1,8 +1,12 @@
 ---
 title: TUI dashboard restructure — nouns vs. commands
-status: draft
+status: superseded
+superseded_by: 2026-05-03-textual-tui-design.md
 date: 2026-05-03
 ---
+
+> **Superseded.** The curses cleanup proposed here was abandoned in favour of a full Textual rewrite. See [2026-05-03-textual-tui-design.md](2026-05-03-textual-tui-design.md). The framework-neutral pieces (vault helpers for arcs/lore, `arcs suggest` / `lore suggest` CLI commands) are absorbed into the new spec.
+
 
 ## Problem
 

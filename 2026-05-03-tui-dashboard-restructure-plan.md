@@ -1,5 +1,7 @@
 # TUI Dashboard Restructure Implementation Plan
 
+> **Superseded.** This plan was built on the curses-based design at [2026-05-03-tui-dashboard-restructure-design.md](2026-05-03-tui-dashboard-restructure-design.md), which has been replaced by the Textual rewrite at [2026-05-03-textual-tui-design.md](2026-05-03-textual-tui-design.md). Tasks 0 and 1 have already shipped (`pytest` dev-dep, dashboard sub-screen routing commit, and `arc_beats` reader). The remaining curses-specific tasks (9–12) are abandoned. The framework-neutral pieces (Tasks 2–8: arc/lore vault mutators and AI suggest CLIs) are absorbed into the new spec and will be re-planned there.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Restructure the `showbible tui` dashboard menu into NAVIGATE (Episodes/Cast/Arc/Lore/Outputs) and COMMAND (Run/Snapshot/Doctor/Quit) sections, and bring Arc and Lore to feature parity with Cast via dedicated two-pane sub-screens with add/edit/delete/AI-suggest.
