@@ -791,6 +791,10 @@ def _workflow_tui(vault: Path, episode_id: str, provider: str) -> int:
                     state["message"] = _run_dashboard_live(screen, vault, state["episode_id"], provider)
                 elif action == "outputs":
                     state["message"] = _episode_outputs_tui(screen, vault, state["episode_id"])
+                elif action == "cast":
+                    state["message"] = _cast_tui(screen, vault, state["episode_id"], provider)
+                elif action == "episodes":
+                    state["episode_id"], state["message"] = _episodes_tui(screen, vault, state["episode_id"])
                 else:
                     state["episode_id"], state["message"] = _run_dashboard_action(
                         vault,
@@ -902,12 +906,8 @@ def _draw_run_progress(
 def _dashboard_actions(episode_id: str) -> list[tuple[str, str]]:
     return [
         ("Show snapshot", "snapshot"),
-        ("Create/select episode", "episode-select"),
-        ("Create next episode", "episode-next-new"),
-        ("Add show cast", "cast-show-add"),
-        (f"Add {episode_id} cast override", "cast-episode-add"),
-        ("AI suggest show cast (apply)", "suggest-show-apply"),
-        (f"AI suggest {episode_id} cast (apply)", "suggest-episode-apply"),
+        ("Manage episodes", "episodes"),
+        ("Manage cast", "cast"),
         (f"Add {episode_id} arc beat", "arc-add"),
         (f"Add {episode_id} lore fact", "lore-add"),
         (f"View/edit {episode_id} outputs", "outputs"),
@@ -926,60 +926,6 @@ def _run_dashboard_action(
 ) -> tuple[str, str]:
     if action == "snapshot":
         return episode_id, _workflow_snapshot_text(vault, episode_id, provider)
-    if action == "episode-select":
-        selected = _dashboard_prompt(prompt, "Episode id", episode_id) or episode_id
-        ensure_episode(vault, selected)
-        _write_room_state(vault, "planning", episode_id=selected)
-        return selected, f"Selected episode {selected}."
-    if action == "episode-next-new":
-        selected = _next_episode_id(list_episodes(vault))
-        ensure_episode(vault, selected)
-        _write_room_state(vault, "planning", episode_id=selected)
-        return selected, f"Created and selected {selected}."
-    if action in {"cast-show-add", "cast-episode-add"}:
-        display = _dashboard_prompt(prompt, "Display name", "")
-        if not display:
-            return episode_id, "Cancelled: display name is required."
-        kind = _dashboard_prompt(prompt, "Kind", "actor") or "actor"
-        plays = _dashboard_prompt(prompt, "Plays/character slug", "") or None
-        slug = slugify(display)
-        write_person(vault, slug, display, kind, plays)
-        role = CastRole(kind=kind, person=slug, plays=plays)
-        if action == "cast-episode-add":
-            add_episode_cast_role(vault, episode_id, role)
-            return episode_id, f"Added {kind} {display} to episode {episode_id}."
-        add_cast_role(vault, role)
-        return episode_id, f"Added show {kind} {display}."
-    if action == "suggest-show-apply":
-        output = _capture_cli_output(
-            cmd_cast_suggest,
-            argparse.Namespace(
-                vault=str(vault),
-                episode=None,
-                show=None,
-                provider=provider,
-                limit=6,
-                apply=True,
-                pick=False,
-                json=False,
-            ),
-        )
-        return episode_id, output or "Applied show cast suggestions."
-    if action == "suggest-episode-apply":
-        output = _capture_cli_output(
-            cmd_cast_suggest,
-            argparse.Namespace(
-                vault=str(vault),
-                episode=episode_id,
-                show=False,
-                provider=provider,
-                limit=6,
-                apply=True,
-                pick=False,
-                json=False,
-            ),
-        )
-        return episode_id, output or f"Applied {episode_id} cast suggestions."
     if action == "arc-add":
         beat = _dashboard_prompt(prompt, "Arc beat", "Pilot tests the season theme.")
         if not beat:
@@ -998,10 +944,6 @@ def _run_dashboard_action(
             argparse.Namespace(vault=str(vault), fact=fact, source=episode_id),
         )
         return episode_id, output
-    if action == "outputs":
-        artifacts = list_episode_artifacts(vault, episode_id)
-        existing = [artifact for artifact in artifacts if artifact["exists"]]
-        return episode_id, f"{len(existing)} output artifact(s) available for {episode_id}."
     if action == "run":
         output = _capture_cli_output(
             cmd_run,
@@ -1303,11 +1245,15 @@ def cmd_cast_remove(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_cast_suggest(args: argparse.Namespace) -> int:
-    vault = resolve_vault(args.vault)
-    episode_id = _cast_episode_scope(vault, args)
+def _generate_cast_suggestions(
+    vault: Path,
+    episode_id: str | None,
+    provider: str,
+    limit: int = 6,
+    show_name: str | None = None,
+) -> list[dict[str, object]]:
     pack = (vault / "pack.yaml").read_text(encoding="utf-8")
-    show_name = args.show or _show_name_from_pack(pack) or vault.name
+    show_name = show_name or _show_name_from_pack(pack) or vault.name
     existing_roles = effective_cast_roles(vault, episode_id)
     existing_people = {role.person for role in existing_roles}
     existing_line = ", ".join(sorted(existing_people)) or "none"
@@ -1319,7 +1265,7 @@ def cmd_cast_suggest(args: argparse.Namespace) -> int:
         f"Suggest a compact writers-room cast for {show_name}. Use real public people associated with the show "
         "when you know them: creators, showrunners, directors, writers, and actors. "
         "Do not invent generic labels like Cast Member, TV Writer, or Director. "
-        f"Return JSON only: an array of up to {args.limit} objects with keys "
+        f"Return JSON only: an array of up to {limit} objects with keys "
         "kind, person, display_name, and optional plays. Include showrunner, director, writer, and actor roles. "
         "Use lowercase kebab-case for person and plays. The plays value must be one string, never an array. "
         "Return compact complete JSON and do not include prose. "
@@ -1330,9 +1276,9 @@ def cmd_cast_suggest(args: argparse.Namespace) -> int:
     suggestion_dir = (vault / "episodes" / episode_id) if episode_id else (vault / "research")
     suggestion_path = suggestion_dir / "cast-suggestions.md"
     raw_path = suggestion_dir / "cast-suggestions-raw.md"
-    provider = resolve_provider(args.provider)
+    provider_obj = resolve_provider(provider)
     try:
-        generation = provider.generate("cast-suggest", "cast", prompt)
+        generation = provider_obj.generate("cast-suggest", "cast", prompt)
         try:
             suggestions = _extract_json_array(generation.text)
         except ValueError:
@@ -1342,14 +1288,14 @@ def cmd_cast_suggest(args: argparse.Namespace) -> int:
                 + generation.text
                 + "\n\nReturn only one valid JSON array now."
             )
-            generation = provider.generate("cast-suggest", "cast", repair_prompt)
+            generation = provider_obj.generate("cast-suggest", "cast", repair_prompt)
             try:
                 suggestions = _extract_json_array(generation.text)
             except ValueError as exc:
                 atomic_write_text(raw_path, generation.text + "\n")
                 raise ValueError(f"AI cast suggestion did not return valid JSON. Raw output saved: {raw_path}") from exc
     except ProviderError as exc:
-        suggestions = _fallback_cast_suggestions(show_name, args.limit, existing_people)
+        suggestions = _fallback_cast_suggestions(show_name, limit, existing_people)
         atomic_write_text(raw_path, f"Provider failed: {exc}\n")
     suggestions = _filter_existing_suggestions(suggestions, existing_people)
     if not suggestions:
@@ -1359,16 +1305,23 @@ def cmd_cast_suggest(args: argparse.Namespace) -> int:
             + f"Do not include any of: {existing_line}."
         )
         try:
-            generation = provider.generate("cast-suggest", "cast", refill_prompt)
+            generation = provider_obj.generate("cast-suggest", "cast", refill_prompt)
             suggestions = _filter_existing_suggestions(_extract_json_array(generation.text), existing_people)
         except (ProviderError, ValueError):
-            suggestions = _fallback_cast_suggestions(show_name, args.limit, existing_people)
+            suggestions = _fallback_cast_suggestions(show_name, limit, existing_people)
     atomic_write_text(suggestion_path, f"# Cast Suggestions for {show_name}\n\n```json\n{json.dumps(suggestions, indent=2)}\n```\n")
+    return suggestions
+
+
+def cmd_cast_suggest(args: argparse.Namespace) -> int:
+    vault = resolve_vault(args.vault)
+    episode_id = _cast_episode_scope(vault, args)
+    suggestions = _generate_cast_suggestions(vault, episode_id, args.provider, args.limit, show_name=args.show)
     if args.apply:
         _apply_cast_suggestions(vault, episode_id, suggestions)
         print(f"Applied {len(suggestions)} cast suggestion(s) to {'episode ' + episode_id if episode_id else 'show'}.")
     elif args.pick or _should_pick(args):
-        picked = _pick_cast_suggestions(suggestions, f"{show_name} cast suggestions")
+        picked = _pick_cast_suggestions(suggestions, f"{_show_name_from_pack((vault / 'pack.yaml').read_text(encoding='utf-8')) or vault.name} cast suggestions")
         if picked:
             _apply_cast_suggestions(vault, episode_id, picked)
             print(f"Applied {len(picked)} selected cast suggestion(s) to {'episode ' + episode_id if episode_id else 'show'}.")
@@ -1378,6 +1331,7 @@ def cmd_cast_suggest(args: argparse.Namespace) -> int:
         print(json.dumps(suggestions, indent=2, sort_keys=True))
     else:
         print(json.dumps(suggestions, indent=2))
+        suggestion_path = (vault / "episodes" / episode_id / "cast-suggestions.md") if episode_id else (vault / "research" / "cast-suggestions.md")
         print(f"Saved suggestions: {suggestion_path}")
         print("Run from a terminal for the picker, or use --pick / --apply / --json.")
     return 0
@@ -1626,6 +1580,249 @@ def _write_room_state(vault: Path, status: str, episode_id: str | None = None) -
     if episode_id:
         state["current_episode"] = episode_id
     atomic_write_json(vault / ".room" / "state.json", state)
+
+
+def _cast_tui(screen: "curses.window", vault: Path, episode_id: str, provider: str) -> str:
+    selected = 0
+    message = "Cast manager"
+    while True:
+        show_roles = cast_roles(vault)
+        ep_roles = episode_cast_roles(vault, episode_id) if episode_id else []
+        effective = effective_cast_roles(vault, episode_id)
+        people_by_slug = {person["slug"]: person for person in people(vault)}
+        items: list[dict[str, object]] = []
+        for role in effective:
+            scope = "episode" if any(r.person == role.person for r in ep_roles) else "show"
+            display = people_by_slug.get(role.person, {}).get("display_name", role.person)
+            items.append({"role": role, "scope": scope, "display": display})
+        screen.erase()
+        height, width = screen.getmaxyx()
+        menu_width = max(26, min(42, width // 3))
+        screen.addnstr(0, 0, f"Cast - {'episode ' + episode_id if episode_id else 'show'}", width - 1, curses.A_BOLD)
+        screen.addnstr(1, 0, "j/k move  a add  d delete  e edit  s AI suggest  q return", width - 1)
+        max_list = max(0, height - 4)
+        for index, item in enumerate(items[:max_list]):
+            role = item["role"]
+            tag = "[ep]" if item["scope"] == "episode" else "[sh]"
+            line = f"{tag} {role.kind}: {item['display']}"
+            attr = curses.A_REVERSE if index == selected else curses.A_NORMAL
+            screen.addnstr(index + 3, 0, line, menu_width - 1, attr)
+        add_index = len(items)
+        if add_index < max_list:
+            attr = curses.A_REVERSE if selected == add_index else curses.A_NORMAL
+            screen.addnstr(add_index + 3, 0, "+ Add new cast member", menu_width - 1, attr)
+        panel_x = min(menu_width + 2, width - 1)
+        panel_width = max(1, width - panel_x)
+        if selected < len(items):
+            item = items[selected]
+            role = item["role"]
+            lines = [
+                f"kind: {role.kind}",
+                f"person: {role.person}",
+                f"display: {item['display']}",
+                f"plays: {role.plays or '-'}",
+                f"scope: {item['scope']}",
+                f"file: people/{role.person}.md",
+            ]
+        else:
+            lines = ["Select a cast member or choose + Add new."]
+        for index, line in enumerate(lines[:max_list]):
+            screen.addnstr(index + 3, panel_x, line, panel_width - 1)
+        key = screen.getch()
+        if key in (ord("q"), 27):
+            return message
+        if key in (curses.KEY_DOWN, ord("j")):
+            selected = min(len(items), selected + 1)
+        elif key in (curses.KEY_UP, ord("k")):
+            selected = max(0, selected - 1)
+        elif key == ord("a"):
+            display = _prompt_dashboard_line(screen, "Display name", "")
+            if not display:
+                message = "Add cancelled."
+                continue
+            kind = _prompt_dashboard_line(screen, "Kind", "actor") or "actor"
+            plays = _prompt_dashboard_line(screen, "Plays/character slug", "") or None
+            scope = (_prompt_dashboard_line(screen, "Scope [show]", "show") or "show").strip().lower()
+            slug = slugify(display)
+            write_person(vault, slug, display, kind, plays)
+            role = CastRole(kind=kind, person=slug, plays=plays)
+            if scope == "episode" and episode_id:
+                add_episode_cast_role(vault, episode_id, role)
+                message = f"Added {kind} {display} to episode {episode_id}."
+            else:
+                add_cast_role(vault, role)
+                message = f"Added show {kind} {display}."
+        elif key == ord("d"):
+            if selected < len(items):
+                item = items[selected]
+                role = item["role"]
+                if item["scope"] == "episode" and episode_id:
+                    remove_episode_cast_role(vault, episode_id, role.person)
+                else:
+                    remove_cast_role(vault, role.person)
+                message = f"Removed {role.person}."
+                selected = max(0, selected - 1)
+        elif key == ord("e"):
+            if selected < len(items):
+                item = items[selected]
+                role = item["role"]
+                kind = _prompt_dashboard_line(screen, "Kind", role.kind) or role.kind
+                plays = _prompt_dashboard_line(screen, "Plays", role.plays or "") or None
+                if item["scope"] == "episode" and episode_id:
+                    add_episode_cast_role(vault, episode_id, CastRole(kind=kind, person=role.person, plays=plays))
+                else:
+                    add_cast_role(vault, CastRole(kind=kind, person=role.person, plays=plays))
+                message = f"Updated {role.person}."
+        elif key == ord("s"):
+            message = _cast_suggest_tui(screen, vault, episode_id, provider)
+
+
+def _cast_suggest_tui(screen: "curses.window", vault: Path, episode_id: str | None, provider: str) -> str:
+    suggestions: list[dict[str, object]] = []
+    error: str | None = None
+    lock = threading.Lock()
+    done = False
+
+    def worker() -> None:
+        nonlocal suggestions, error, done
+        try:
+            suggestions = _generate_cast_suggestions(vault, episode_id, provider, limit=6)
+        except Exception as exc:  # noqa: BLE001
+            error = str(exc)
+        finally:
+            with lock:
+                done = True
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    spinner = "|/-\\"
+    tick = 0
+    screen.nodelay(True)
+    try:
+        while True:
+            with lock:
+                if done:
+                    break
+            screen.erase()
+            height, width = screen.getmaxyx()
+            screen.addnstr(0, 0, "AI Cast Suggestions", width - 1, curses.A_BOLD)
+            screen.addnstr(2, 0, f"Generating suggestions... {spinner[tick % len(spinner)]}", width - 1)
+            tick += 1
+            time.sleep(0.15)
+    finally:
+        screen.nodelay(False)
+    if error:
+        return f"Suggestion failed: {error}"
+    if not suggestions:
+        return "No suggestions returned."
+    picked = _pick_items_screen(
+        screen,
+        suggestions,
+        "Select cast suggestions to apply",
+        lambda item: f"{item.get('kind', 'actor')}: {item.get('person')} ({item.get('display_name', '')})"
+        + (f" as {item.get('plays')}" if item.get("plays") else ""),
+    )
+    if picked:
+        _apply_cast_suggestions(vault, episode_id, picked)
+        return f"Applied {len(picked)} suggestion(s)."
+    return "No suggestions applied."
+
+
+def _pick_items_screen(
+    screen: "curses.window",
+    items: list[dict[str, object]],
+    title: str,
+    format_fn: object,
+) -> list[dict[str, object]]:
+    if not items:
+        return []
+    selected: set[int] = set()
+    current = 0
+    while True:
+        screen.erase()
+        height, width = screen.getmaxyx()
+        screen.addnstr(0, 0, title, width - 1, curses.A_BOLD)
+        screen.addnstr(1, 0, "space select  enter apply  a all  q cancel", width - 1)
+        for index, item in enumerate(items[: max(0, height - 4)]):
+            marker = "[x]" if index in selected else "[ ]"
+            line = f"{marker} {format_fn(item)}"
+            attr = curses.A_REVERSE if index == current else curses.A_NORMAL
+            screen.addnstr(index + 3, 0, line, width - 1, attr)
+        key = screen.getch()
+        if key in (ord("q"), 27):
+            return []
+        if key in (curses.KEY_DOWN, ord("j")):
+            current = min(len(items) - 1, current + 1)
+        elif key in (curses.KEY_UP, ord("k")):
+            current = max(0, current - 1)
+        elif key == ord(" "):
+            if current in selected:
+                selected.remove(current)
+            else:
+                selected.add(current)
+        elif key == ord("a"):
+            selected = set(range(len(items)))
+        elif key in (curses.KEY_ENTER, 10, 13):
+            if not selected:
+                selected.add(current)
+            return [items[i] for i in sorted(selected)]
+
+
+def _episodes_tui(screen: "curses.window", vault: Path, current_episode_id: str) -> tuple[str, str]:
+    selected = 0
+    message = "No change."
+    while True:
+        episodes = list_episodes(vault)
+        items = episodes + ["+ New episode"]
+        selected = min(selected, len(items) - 1)
+        screen.erase()
+        height, width = screen.getmaxyx()
+        menu_width = max(26, min(38, width // 3))
+        screen.addnstr(0, 0, f"Episodes - {vault.name}", width - 1, curses.A_BOLD)
+        screen.addnstr(1, 0, "j/k move  n new  enter select  q return", width - 1)
+        max_list = max(0, height - 4)
+        for index, item in enumerate(items[:max_list]):
+            marker = ">" if item == current_episode_id else " "
+            label = item
+            attr = curses.A_REVERSE if index == selected else curses.A_NORMAL
+            screen.addnstr(index + 3, 0, f"{marker} {label}", menu_width - 1, attr)
+        panel_x = min(menu_width + 2, width - 1)
+        panel_width = max(1, width - panel_x)
+        if selected < len(episodes):
+            ep_id = episodes[selected]
+            meta = read_json(vault / "episodes" / ep_id / "meta.json", {})
+            lines = [
+                f"episode: {ep_id}",
+                f"status: {meta.get('status', 'created')}",
+                f"completed phases: {len(meta.get('completed_phases', []))}",
+                f"cast overrides: {len(meta.get('cast_overrides', []))}",
+            ]
+        else:
+            lines = ["Create a new episode."]
+        for index, line in enumerate(lines[:max_list]):
+            screen.addnstr(index + 3, panel_x, line, panel_width - 1)
+        key = screen.getch()
+        if key in (ord("q"), 27):
+            return current_episode_id, message
+        if key in (curses.KEY_DOWN, ord("j")):
+            selected = min(len(items) - 1, selected + 1)
+        elif key in (curses.KEY_UP, ord("k")):
+            selected = max(0, selected - 1)
+        elif key == ord("n") or (key in (curses.KEY_ENTER, 10, 13) and selected == len(episodes)):
+            default_id = _next_episode_id(episodes)
+            new_id = _prompt_dashboard_line(screen, "New episode id", default_id)
+            if new_id:
+                ensure_episode(vault, new_id)
+                message = f"Created episode {new_id}."
+                current_episode_id = new_id
+                _write_room_state(vault, "planning", episode_id=new_id)
+                return current_episode_id, message
+        elif key in (curses.KEY_ENTER, 10, 13):
+            ep_id = episodes[selected]
+            message = f"Selected episode {ep_id}."
+            current_episode_id = ep_id
+            _write_room_state(vault, "planning", episode_id=ep_id)
+            return current_episode_id, message
 
 
 def main(argv: list[str] | None = None) -> int:
