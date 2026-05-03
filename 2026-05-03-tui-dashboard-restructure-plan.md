@@ -1463,7 +1463,7 @@ git commit -m "feat(tui): split dashboard menu into NAVIGATE and COMMAND"
 
 ### Task 10: `_arc_tui` sub-screen
 
-Mirror `_cast_tui`'s two-pane layout. Beats are listed across all arcs in `vault/arcs/*.md`; the bottom-of-list `+ Add new beat` row prompts arc/episode/status/text. AI suggest applies the model output immediately to the beat's arc (default `season-theme`).
+Mirror `_cast_tui`'s two-pane layout. Beats are listed across all arcs in `vault/arcs/*.md`; the bottom-of-list `+ Add new beat` row prompts arc/episode/status/text. The `s` AI suggest hotkey delegates to a new `_arc_suggest_tui` modelled on the existing `_cast_suggest_tui` ([cli.py:1680-1728](showbible/cli.py)) — background thread + spinner during generation, then `_pick_items_screen` for in-TUI selection of which beats to apply.
 
 **Files:**
 - Modify: `showbible/cli.py` (replace the `_arc_tui` stub from Task 9 with the full implementation; place near `_cast_tui` around line 1585)
@@ -1559,15 +1559,69 @@ def _arc_tui(screen: "curses.window", vault: Path, episode_id: str, provider: st
                 message = "Delete cancelled."
         elif key == ord("s"):
             arc_slug = items[selected]["beat"].arc if items[selected]["kind"] == "beat" else "season-theme"
-            try:
-                suggestions = _generate_arc_suggestions(vault, episode_id, provider, arc_slug=arc_slug)
-                applied = _apply_arc_suggestions(vault, arc_slug, suggestions)
-                message = f"Applied {applied} AI beat suggestion(s) to {arc_slug}."
-            except (ProviderError, ValueError) as exc:
-                message = f"AI suggest failed: {exc}"
+            message = _arc_suggest_tui(screen, vault, episode_id, provider, arc_slug)
 ```
 
 Add `VaultError` and `ArcBeat` to the `from showbible.vault import …` block in `cli.py` if not already present.
+
+Then add the helper that gives the user a visible spinner while the model runs and an interactive picker for the result. Place it directly below `_arc_tui`:
+
+```python
+def _arc_suggest_tui(
+    screen: "curses.window",
+    vault: Path,
+    episode_id: str,
+    provider: str,
+    arc_slug: str,
+) -> str:
+    suggestions: list[dict[str, str]] = []
+    error: str | None = None
+    lock = threading.Lock()
+    done = False
+
+    def worker() -> None:
+        nonlocal suggestions, error, done
+        try:
+            suggestions = _generate_arc_suggestions(vault, episode_id, provider, arc_slug=arc_slug)
+        except Exception as exc:  # noqa: BLE001
+            error = str(exc)
+        finally:
+            with lock:
+                done = True
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    spinner = "|/-\\"
+    tick = 0
+    screen.nodelay(True)
+    try:
+        while True:
+            with lock:
+                if done:
+                    break
+            screen.erase()
+            height, width = screen.getmaxyx()
+            screen.addnstr(0, 0, f"AI Arc Suggestions - {arc_slug}", width - 1, curses.A_BOLD)
+            screen.addnstr(2, 0, f"Generating suggestions... {spinner[tick % len(spinner)]}", width - 1)
+            tick += 1
+            time.sleep(0.15)
+    finally:
+        screen.nodelay(False)
+    if error:
+        return f"Suggestion failed: {error}"
+    if not suggestions:
+        return "No suggestions returned."
+    picked = _pick_items_screen(
+        screen,
+        suggestions,
+        f"Select arc beat suggestions to apply to {arc_slug}",
+        lambda item: f"{item.get('episode')} [{item.get('status')}] {item.get('beat')}",
+    )
+    if picked:
+        applied = _apply_arc_suggestions(vault, arc_slug, picked)
+        return f"Applied {applied} arc beat suggestion(s) to {arc_slug}."
+    return "No suggestions applied."
+```
 
 - [ ] **Step 2: Manual smoke check that the module still imports**
 
@@ -1679,15 +1733,68 @@ def _lore_tui(screen: "curses.window", vault: Path, episode_id: str, provider: s
             else:
                 message = "Delete cancelled."
         elif key == ord("s"):
-            try:
-                suggestions = _generate_lore_suggestions(vault, episode_id, provider)
-                applied = _apply_lore_suggestions(vault, suggestions, source=episode_id or "manual")
-                message = f"Applied {applied} AI fact suggestion(s)."
-            except (ProviderError, ValueError) as exc:
-                message = f"AI suggest failed: {exc}"
+            message = _lore_suggest_tui(screen, vault, episode_id, provider)
 ```
 
 Add `LoreFact` to the `from showbible.vault import …` line in `cli.py` (and confirm `update_lore_fact`, `remove_lore_fact` are already imported from Tasks 5–6).
+
+Then add a sibling helper, modelled on `_arc_suggest_tui` and `_cast_suggest_tui`, that animates while the model runs and uses `_pick_items_screen` for selection. Place it directly below `_lore_tui`:
+
+```python
+def _lore_suggest_tui(
+    screen: "curses.window",
+    vault: Path,
+    episode_id: str,
+    provider: str,
+) -> str:
+    suggestions: list[dict[str, str]] = []
+    error: str | None = None
+    lock = threading.Lock()
+    done = False
+
+    def worker() -> None:
+        nonlocal suggestions, error, done
+        try:
+            suggestions = _generate_lore_suggestions(vault, episode_id, provider)
+        except Exception as exc:  # noqa: BLE001
+            error = str(exc)
+        finally:
+            with lock:
+                done = True
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    spinner = "|/-\\"
+    tick = 0
+    screen.nodelay(True)
+    try:
+        while True:
+            with lock:
+                if done:
+                    break
+            screen.erase()
+            height, width = screen.getmaxyx()
+            screen.addnstr(0, 0, "AI Lore Suggestions", width - 1, curses.A_BOLD)
+            screen.addnstr(2, 0, f"Generating suggestions... {spinner[tick % len(spinner)]}", width - 1)
+            tick += 1
+            time.sleep(0.15)
+    finally:
+        screen.nodelay(False)
+    if error:
+        return f"Suggestion failed: {error}"
+    if not suggestions:
+        return "No suggestions returned."
+    picked = _pick_items_screen(
+        screen,
+        suggestions,
+        "Select lore fact suggestions to apply",
+        lambda item: str(item.get("fact", "")),
+    )
+    if picked:
+        applied = _apply_lore_suggestions(vault, picked, source=episode_id or "manual")
+        return f"Applied {applied} lore fact suggestion(s)."
+    return "No suggestions applied."
+```
 
 - [ ] **Step 2: Smoke import check**
 

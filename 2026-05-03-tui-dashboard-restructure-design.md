@@ -88,7 +88,7 @@ Hotkeys:
 - `a` — add: prompts arc slug (default `season-theme`), episode id (default current), status (default `planned`), beat text. Calls `add_arc_beat` vault helper.
 - `e` — edit: prompts the four fields pre-filled with the current beat's values. Calls `update_arc_beat`.
 - `d` — delete: confirmation prompt, then `remove_arc_beat`.
-- `s` — AI suggest: calls `_generate_arc_suggestions`, applies them to the current arc/episode (mirrors the cast `s` flow which always applies, since the picker only works outside the dashboard).
+- `s` — AI suggest: opens `_arc_suggest_tui`, which mirrors the existing `_cast_suggest_tui`. It runs `_generate_arc_suggestions` on a background thread while drawing a spinner (`Generating suggestions… |/-\`), then hands the result to the in-TUI picker `_pick_items_screen` so the user can select which beats to apply.
 - `q`/ESC — return.
 
 ### Lore sub-screen — `_lore_tui(screen, vault, episode_id, provider)`
@@ -102,7 +102,7 @@ Right pane fields:
 - `source:` source recorded by `cmd_lore_add` (parsed from the trailing `*Source: <value>*` marker on each `- **Manual fact** - …` bullet), defaulting to `manual`
 - `file:` `lore-bible/canon.md`
 
-Hotkeys: same letters as Arc (`a`, `e`, `d`, `s`, `q`), backed by the lore vault helpers and `_generate_lore_suggestions`.
+Hotkeys: same letters as Arc (`a`, `e`, `d`, `s`, `q`), backed by the lore vault helpers and `_generate_lore_suggestions`. The `s` hotkey opens `_lore_suggest_tui` — same spinner + `_pick_items_screen` flow as the Arc and Cast equivalents.
 
 ### Episodes, Cast, Outputs
 
@@ -146,7 +146,7 @@ CLI:
 
 Both follow the cast precedent: `--apply` writes immediately, `--pick` opens the curses picker (terminal-only), default prints JSON and saves the suggestion file.
 
-The TUI `s` hotkey calls `_generate_*_suggestions` directly and then immediately applies — same compromise the cast TUI makes (no nested curses picker).
+The TUI `s` hotkey routes through dedicated `_arc_suggest_tui` / `_lore_suggest_tui` helpers (parallel to the existing `_cast_suggest_tui`). They run the model on a background thread, draw a `Generating suggestions… |/-\` spinner so the user can see work is in flight, and on completion delegate to the in-TUI picker `_pick_items_screen` to let the user choose which suggestions to apply.
 
 ## Data flow
 
