@@ -18,7 +18,7 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Topic :: Artistic Software",
 ]
-dependencies = []
+dependencies = ["textual>=0.86"]
 
 [project.scripts]
 showbible = "showbible.cli:main"
@@ -36,8 +36,10 @@ showbible = ["ui/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
 
 [dependency-groups]
 dev = [
     "pytest>=9.0.3",
+    "pytest-asyncio>=0.24",
 ]
