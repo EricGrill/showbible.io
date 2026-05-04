@@ -21,6 +21,7 @@ from .server import serve, status_payload, transcript_text
 from .vault import (
     VaultError,
     CastRole,
+    add_arc_beat,
     add_cast_role,
     add_episode_cast_role,
     atomic_write_json,
@@ -584,15 +585,7 @@ def cmd_arcs_show(args: argparse.Namespace) -> int:
 def cmd_arcs_add(args: argparse.Namespace) -> int:
     vault = resolve_vault(args.vault)
     episode_id = _arc_episode_scope(vault, args) or "S01E01"
-    path = _arc_path(vault, args.arc)
-    if not path.exists():
-        title = args.arc.replace("-", " ").title()
-        atomic_write_text(path, f"# {title}\n\n")
-    existing = path.read_text(encoding="utf-8").rstrip()
-    if "## Episode Beats" not in existing:
-        existing += "\n\n## Episode Beats\n"
-    entry = f"\n- {episode_id} [{args.status}] {args.beat.strip()}"
-    atomic_write_text(path, existing.rstrip() + entry + "\n")
+    path = add_arc_beat(vault, args.arc, episode_id, args.status, args.beat)
     print(f"Added arc beat to {path.name}: {episode_id} [{args.status}] {args.beat.strip()}")
     return 0
 
