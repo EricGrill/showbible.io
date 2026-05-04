@@ -262,7 +262,7 @@ class ShowBibleApp(App):
                     generator=lambda: _generate_arc_suggestions(vault, episode_id, self._provider, arc_slug=slug),
                     format_row=lambda item: f"{item.get('episode')} [{item.get('status')}] {item.get('beat')}",
                 ),
-                lambda picked: self._apply_arc_picked_arc(slug, picked),
+                lambda picked: self._apply_arc_picked(slug, picked),
             )
 
     def _apply_arc_form(self, result: ArcBeatFormResult | None, *, original: tuple | None = None) -> None:
@@ -295,7 +295,7 @@ class ShowBibleApp(App):
         self.state = self.state.with_action(f"Deleted beat from {arc_slug}.").refreshed_from_disk()
         self._populate_panes()
 
-    def _apply_arc_picked_arc(self, arc_slug: str, picked: list[dict] | None) -> None:
+    def _apply_arc_picked(self, arc_slug: str, picked: list[dict] | None) -> None:
         if not picked:
             return
         from showbible.cli import _apply_arc_suggestions
