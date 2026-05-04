@@ -981,3 +981,36 @@ def test_app_state_refresh_from_disk(tmp_path: Path) -> None:
     assert any(b.beat == "open the season" for b in state.arc_beats)
     assert any(f.text == "The colony predates the founders." for f in state.lore_facts)
     assert state.runs == {}
+
+
+def test_run_registry_tracks_progress() -> None:
+    from collections import deque
+
+    from showbible.tui.runs import RunHandle, RunRegistry
+
+    registry = RunRegistry()
+
+    handle = registry.start("S01E01")
+    assert handle.episode_id == "S01E01"
+    assert handle.status == "running"
+    assert handle.run_id in registry.handles
+
+    registry.on_progress(handle.run_id, "started", "pitch", {})
+    assert registry.handles[handle.run_id].current_phase == "pitch"
+
+    registry.on_progress(handle.run_id, "completed", "pitch", {"tokens": 12})
+    assert "pitch" in registry.handles[handle.run_id].completed_phases
+    assert registry.handles[handle.run_id].tokens == 12
+
+    registry.on_progress(handle.run_id, "skipped", "break", {})
+    assert "break" in registry.handles[handle.run_id].skipped_phases
+
+    registry.on_completed(handle.run_id, message="Ran S01E01")
+    assert registry.handles[handle.run_id].status == "complete"
+
+    failure = registry.start("S01E02")
+    registry.on_failed(failure.run_id, error="boom")
+    assert registry.handles[failure.run_id].status == "failed"
+    assert registry.handles[failure.run_id].error == "boom"
+
+    assert isinstance(registry.handles[handle.run_id].log_tail, deque)
