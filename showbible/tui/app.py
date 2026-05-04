@@ -8,14 +8,16 @@ from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.widgets import Footer, Static
 
-from showbible.tui.panes.arc import ArcPane
+from showbible.tui.panes.arc import ArcAction, ArcPane
 from showbible.tui.panes.base import BasePane
 from showbible.tui.panes.cast import CastAction, CastPane
+from showbible.tui.screens.add_arc_beat import AddArcBeatScreen, ArcBeatFormResult
 from showbible.tui.screens.add_cast import AddCastScreen, CastFormResult
+from showbible.tui.screens.add_lore import AddLoreScreen, LoreFactFormResult
 from showbible.tui.screens.ai_suggest import AISuggestScreen
 from showbible.tui.screens.confirm import ConfirmScreen
 from showbible.tui.panes.episodes import EpisodeSelected, EpisodesPane
-from showbible.tui.panes.lore import LorePane
+from showbible.tui.panes.lore import LoreAction, LorePane
 from showbible.tui.panes.outputs import OutputsPane
 from showbible.tui.panes.run_detail import RunDetailPane
 from showbible.tui.runs import RunRegistry
@@ -220,4 +222,148 @@ class ShowBibleApp(App):
         from showbible.cli import _apply_cast_suggestions
         _apply_cast_suggestions(self.state.vault, self.state.current_episode, picked)
         self.state = self.state.with_action(f"Applied {len(picked)} cast suggestion(s).").refreshed_from_disk()
+        self._populate_panes()
+
+    def on_arc_action(self, message: ArcAction) -> None:
+        if message.action == "add":
+            self.push_screen(
+                AddArcBeatScreen(default_episode=self.state.current_episode),
+                lambda result: self._apply_arc_form(result),
+            )
+        elif message.action == "edit" and message.arc_slug and message.beat:
+            self.push_screen(
+                AddArcBeatScreen(
+                    title="Edit arc beat",
+                    initial=ArcBeatFormResult(
+                        arc_slug=message.arc_slug,
+                        episode_id=message.episode_id or self.state.current_episode,
+                        status="planned",
+                        beat=message.beat,
+                    ),
+                ),
+                lambda result: self._apply_arc_form(result, original=(message.arc_slug, message.episode_id, message.beat)),
+            )
+        elif message.action == "delete" and message.arc_slug and message.beat:
+            arc_slug = message.arc_slug
+            episode_id = message.episode_id
+            beat = message.beat
+            self.push_screen(
+                ConfirmScreen(f"Delete beat '{beat[:40]}'?"),
+                lambda ok: self._delete_arc_beat(arc_slug, episode_id, beat, ok or False),
+            )
+        elif message.action == "suggest":
+            from showbible.cli import _generate_arc_suggestions
+            slug = message.arc_slug or "season-theme"
+            vault = self.state.vault
+            episode_id = self.state.current_episode
+            self.push_screen(
+                AISuggestScreen(
+                    title=f"arc beat suggestions for {slug}",
+                    generator=lambda: _generate_arc_suggestions(vault, episode_id, self._provider, arc_slug=slug),
+                    format_row=lambda item: f"{item.get('episode')} [{item.get('status')}] {item.get('beat')}",
+                ),
+                lambda picked: self._apply_arc_picked_arc(slug, picked),
+            )
+
+    def _apply_arc_form(self, result: ArcBeatFormResult | None, *, original: tuple | None = None) -> None:
+        if result is None:
+            return
+        from showbible.vault import add_arc_beat, update_arc_beat
+        if original:
+            arc_slug, episode_id, beat = original
+            update_arc_beat(
+                self.state.vault,
+                arc_slug=arc_slug,
+                episode_id=episode_id,
+                original_beat=beat,
+                new_episode_id=result.episode_id,
+                new_status=result.status,
+                new_beat=result.beat,
+            )
+            msg = f"Updated beat in {arc_slug}."
+        else:
+            add_arc_beat(self.state.vault, result.arc_slug, result.episode_id, result.status, result.beat)
+            msg = f"Added beat to {result.arc_slug}: {result.episode_id} [{result.status}] {result.beat}"
+        self.state = self.state.with_action(msg).refreshed_from_disk()
+        self._populate_panes()
+
+    def _delete_arc_beat(self, arc_slug: str, episode_id: str | None, beat: str, confirmed: bool) -> None:
+        if not confirmed:
+            return
+        from showbible.vault import remove_arc_beat
+        remove_arc_beat(self.state.vault, arc_slug, episode_id or self.state.current_episode, beat)
+        self.state = self.state.with_action(f"Deleted beat from {arc_slug}.").refreshed_from_disk()
+        self._populate_panes()
+
+    def _apply_arc_picked_arc(self, arc_slug: str, picked: list[dict] | None) -> None:
+        if not picked:
+            return
+        from showbible.cli import _apply_arc_suggestions
+        _apply_arc_suggestions(self.state.vault, arc_slug, picked)
+        self.state = self.state.with_action(f"Applied {len(picked)} arc beat suggestion(s) to {arc_slug}.").refreshed_from_disk()
+        self._populate_panes()
+
+    def on_lore_action(self, message: LoreAction) -> None:
+        if message.action == "add":
+            self.push_screen(
+                AddLoreScreen(default_source=self.state.current_episode or "manual"),
+                lambda result: self._apply_lore_form(result),
+            )
+        elif message.action == "edit" and message.fact_text:
+            existing = next((f for f in self.state.lore_facts if f.text == message.fact_text), None)
+            if existing is None:
+                return
+            self.push_screen(
+                AddLoreScreen(
+                    title="Edit canon fact",
+                    initial=LoreFactFormResult(text=existing.text, source=existing.source),
+                ),
+                lambda result: self._apply_lore_form(result, original=existing.text),
+            )
+        elif message.action == "delete" and message.fact_text:
+            text = message.fact_text
+            self.push_screen(
+                ConfirmScreen(f"Delete '{text[:40]}'?"),
+                lambda ok: self._delete_lore_fact(text, ok or False),
+            )
+        elif message.action == "suggest":
+            from showbible.cli import _generate_lore_suggestions
+            vault = self.state.vault
+            episode_id = self.state.current_episode
+            self.push_screen(
+                AISuggestScreen(
+                    title="canon fact suggestions",
+                    generator=lambda: _generate_lore_suggestions(vault, episode_id, self._provider),
+                    format_row=lambda item: str(item.get("fact", "")),
+                ),
+                lambda picked: self._apply_lore_picked(picked),
+            )
+
+    def _apply_lore_form(self, result: LoreFactFormResult | None, *, original: str | None = None) -> None:
+        if result is None:
+            return
+        from showbible.vault import add_lore_fact, update_lore_fact
+        if original:
+            update_lore_fact(self.state.vault, original_text=original, new_text=result.text, new_source=result.source)
+            msg = "Updated fact."
+        else:
+            add_lore_fact(self.state.vault, result.text, source=result.source)
+            msg = f"Added fact (source {result.source})."
+        self.state = self.state.with_action(msg).refreshed_from_disk()
+        self._populate_panes()
+
+    def _delete_lore_fact(self, text: str, confirmed: bool) -> None:
+        if not confirmed:
+            return
+        from showbible.vault import remove_lore_fact
+        remove_lore_fact(self.state.vault, text)
+        self.state = self.state.with_action("Deleted fact.").refreshed_from_disk()
+        self._populate_panes()
+
+    def _apply_lore_picked(self, picked: list[dict] | None) -> None:
+        if not picked:
+            return
+        from showbible.cli import _apply_lore_suggestions
+        _apply_lore_suggestions(self.state.vault, picked, source=self.state.current_episode or "manual")
+        self.state = self.state.with_action(f"Applied {len(picked)} lore fact suggestion(s).").refreshed_from_disk()
         self._populate_panes()
