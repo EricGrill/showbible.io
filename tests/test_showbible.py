@@ -695,3 +695,39 @@ def test_arc_beats_reads_all_arcs(tmp_path: Path) -> None:
         ("season-theme", "S01E02", "done", "turn the screw"),
     ]
     assert beats[0].file == vault / "arcs" / "ensemble.md"
+
+
+def test_arc_beat_round_trip(tmp_path: Path) -> None:
+    from showbible.vault import add_arc_beat, arc_beats, remove_arc_beat, update_arc_beat
+
+    vault = init_vault(tmp_path / "demo")
+
+    add_arc_beat(vault, "season-theme", "S01E01", "planned", "open the season")
+    add_arc_beat(vault, "season-theme", "S01E02", "planned", "turn the screw")
+    add_arc_beat(vault, "ensemble", "S01E01", "planned", "introduce the rival")
+
+    summary = [(b.arc, b.episode, b.status, b.beat) for b in arc_beats(vault)]
+    assert ("season-theme", "S01E01", "planned", "open the season") in summary
+    assert ("season-theme", "S01E02", "planned", "turn the screw") in summary
+    assert ("ensemble", "S01E01", "planned", "introduce the rival") in summary
+
+    update_arc_beat(
+        vault,
+        arc_slug="season-theme",
+        episode_id="S01E02",
+        original_beat="turn the screw",
+        new_episode_id="S01E03",
+        new_status="in-progress",
+        new_beat="finally turn the screw",
+    )
+    after_update = [(b.arc, b.episode, b.status, b.beat) for b in arc_beats(vault)]
+    assert ("season-theme", "S01E03", "in-progress", "finally turn the screw") in after_update
+    assert ("season-theme", "S01E02", "planned", "turn the screw") not in after_update
+
+    remove_arc_beat(vault, "ensemble", "S01E01", "introduce the rival")
+    after_remove = [(b.arc, b.episode) for b in arc_beats(vault)]
+    assert ("ensemble", "S01E01") not in after_remove
+
+    season = (vault / "arcs" / "season-theme.md").read_text(encoding="utf-8")
+    assert "# Season Theme" in season
+    assert "## Episode Beats" in season

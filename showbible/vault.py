@@ -518,6 +518,77 @@ def arc_beats(vault: Path) -> list[ArcBeat]:
     return results
 
 
+def _arc_file(vault: Path, arc_slug: str) -> Path:
+    return vault / "arcs" / f"{slugify(arc_slug)}.md"
+
+
+def _arc_line(episode_id: str, status: str, beat: str) -> str:
+    return f"- {episode_id.upper()} [{status.strip()}] {beat.strip()}"
+
+
+def add_arc_beat(vault: Path, arc_slug: str, episode_id: str, status: str, beat: str) -> Path:
+    path = _arc_file(vault, arc_slug)
+    if not path.exists():
+        title = arc_slug.replace("-", " ").title()
+        atomic_write_text(path, f"# {title}\n\n")
+    body = path.read_text(encoding="utf-8").rstrip()
+    if "## Episode Beats" not in body:
+        body += "\n\n## Episode Beats\n"
+    body = body.rstrip() + "\n" + _arc_line(episode_id, status, beat) + "\n"
+    atomic_write_text(path, body)
+    return path
+
+
+def update_arc_beat(
+    vault: Path,
+    *,
+    arc_slug: str,
+    episode_id: str,
+    original_beat: str,
+    new_episode_id: str,
+    new_status: str,
+    new_beat: str,
+) -> Path:
+    path = _arc_file(vault, arc_slug)
+    if not path.exists():
+        raise VaultError(f"arc not found: {arc_slug}")
+    text = path.read_text(encoding="utf-8")
+    new_text, count = _replace_arc_line(text, episode_id, original_beat, _arc_line(new_episode_id, new_status, new_beat))
+    if count == 0:
+        raise VaultError(f"arc beat not found in {arc_slug}: {episode_id} {original_beat!r}")
+    atomic_write_text(path, new_text)
+    return path
+
+
+def remove_arc_beat(vault: Path, arc_slug: str, episode_id: str, beat: str) -> Path:
+    path = _arc_file(vault, arc_slug)
+    if not path.exists():
+        raise VaultError(f"arc not found: {arc_slug}")
+    text = path.read_text(encoding="utf-8")
+    new_text, count = _replace_arc_line(text, episode_id, beat, replacement=None)
+    if count == 0:
+        raise VaultError(f"arc beat not found in {arc_slug}: {episode_id} {beat!r}")
+    atomic_write_text(path, new_text)
+    return path
+
+
+def _replace_arc_line(
+    text: str,
+    episode_id: str,
+    beat: str,
+    replacement: str | None,
+) -> tuple[str, int]:
+    pattern = re.compile(
+        rf"^-\s*{re.escape(episode_id.upper())}\s+\[[^\]]+\]\s+{re.escape(beat.strip())}\s*$",
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    if replacement is None:
+        new_text, count = pattern.subn("", text)
+        new_text = re.sub(r"\n{3,}", "\n\n", new_text)
+        return new_text, count
+    return pattern.subn(replacement, text)
+
+
 def copy_episode(vault: Path, source_id: str, target_id: str) -> Path:
     source = vault / "episodes" / source_id
     target = vault / "episodes" / target_id
