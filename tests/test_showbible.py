@@ -836,3 +836,70 @@ def test_update_lore_fact_preserves_trailing_newline(tmp_path: Path) -> None:
     )
     text = (vault / "lore-bible" / "canon.md").read_text(encoding="utf-8")
     assert text.endswith("\n")
+
+
+def test_arcs_suggest_applies_with_stub_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from showbible.vault import arc_beats
+
+    vault = init_vault(tmp_path / "demo", show_name="Demo Show")
+
+    class Provider:
+        name = "stub"
+
+        def generate(self, phase: str, episode_id: str, prompt: str):
+            return type(
+                "Generation",
+                (),
+                {
+                    "text": '[{"episode":"S01E02","status":"planned","beat":"raise the stakes"},'
+                            '{"episode":"S01E03","status":"planned","beat":"pay off the question"}]',
+                    "tokens": 0,
+                    "dollars": 0.0,
+                },
+            )()
+
+    monkeypatch.setattr("showbible.cli.resolve_provider", lambda name: Provider())
+
+    assert main(
+        [
+            "arcs",
+            "suggest",
+            "--vault",
+            str(vault),
+            "--episode",
+            "S01E01",
+            "--apply",
+        ]
+    ) == 0
+
+    beats = [(b.episode, b.status, b.beat) for b in arc_beats(vault) if b.arc == "season-theme"]
+    assert ("S01E02", "planned", "raise the stakes") in beats
+    assert ("S01E03", "planned", "pay off the question") in beats
+
+
+def test_arcs_suggest_falls_back_when_provider_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    vault = init_vault(tmp_path / "demo", show_name="Demo Show")
+
+    class Provider:
+        name = "broken"
+
+        def generate(self, phase: str, episode_id: str, prompt: str):
+            raise ProviderError("offline")
+
+    monkeypatch.setattr("showbible.cli.resolve_provider", lambda name: Provider())
+
+    assert main(
+        ["arcs", "suggest", "--vault", str(vault), "--episode", "S01E01", "--json"]
+    ) == 0
+
+    output = capsys.readouterr().out
+    assert "beat" in output
+    raw = (vault / "episodes" / "S01E01" / "arc-suggestions-raw.md").read_text(encoding="utf-8")
+    assert "Provider failed" in raw

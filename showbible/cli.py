@@ -23,6 +23,7 @@ from .vault import (
     CastRole,
     add_arc_beat,
     add_cast_role,
+    arc_beats,
     add_lore_fact,
     add_episode_cast_role,
     atomic_write_json,
@@ -308,6 +309,15 @@ def build_parser() -> argparse.ArgumentParser:
     arcs_add.add_argument("--episode", help="episode target; defaults from cwd or S01E01")
     arcs_add.add_argument("--status", default="planned")
     arcs_add.set_defaults(func=cmd_arcs_add)
+    arcs_suggest = arcs_sub.add_parser("suggest", help="suggest arc beats with the AI provider")
+    add_vault_flag(arcs_suggest)
+    arcs_suggest.add_argument("--episode", help="episode scope; defaults from cwd or room state")
+    arcs_suggest.add_argument("--arc", default="season-theme")
+    arcs_suggest.add_argument("--provider", default="lmstudio")
+    arcs_suggest.add_argument("--limit", type=int, default=6)
+    arcs_suggest.add_argument("--apply", action="store_true")
+    arcs_suggest.add_argument("--json", action="store_true")
+    arcs_suggest.set_defaults(func=cmd_arcs_suggest)
     arcs.set_defaults(func=cmd_arcs)
 
     cost = sub.add_parser("cost", help="print cost ledger")
@@ -1385,6 +1395,111 @@ def _fallback_cast_suggestions(show_name: str, limit: int, existing_people: set[
             {"kind": "lore-keeper", "person": "lore-keeper", "display_name": "Lore Keeper"},
         ]
     return _filter_existing_suggestions(candidates, existing_people)[:limit]
+
+
+def _generate_arc_suggestions(
+    vault: Path,
+    episode_id: str | None,
+    provider: str,
+    arc_slug: str = "season-theme",
+    limit: int = 6,
+) -> list[dict[str, str]]:
+    pack = (vault / "pack.yaml").read_text(encoding="utf-8")
+    show_name = _show_name_from_pack(pack) or vault.name
+    existing = [
+        f"{b.episode} [{b.status}] {b.beat}"
+        for b in arc_beats(vault)
+        if b.arc == slugify(arc_slug)
+    ]
+    existing_line = "; ".join(existing) or "none"
+    episode_context = f"\nFocus episode: {episode_id}" if episode_id else ""
+    prompt = (
+        f"Suggest up to {limit} new arc beats for {show_name} on the '{arc_slug}' arc. "
+        "Return JSON only: an array of objects with keys episode (e.g. S01E02), "
+        "status (planned|in-progress|done), and beat (one short sentence). "
+        f"Do not repeat any of these existing beats: {existing_line}.{episode_context}\n\n"
+        f"Current pack:\n{pack}"
+    )
+    suggestion_dir = (vault / "episodes" / episode_id) if episode_id else (vault / "research")
+    suggestion_path = suggestion_dir / "arc-suggestions.md"
+    raw_path = suggestion_dir / "arc-suggestions-raw.md"
+    provider_obj = resolve_provider(provider)
+    try:
+        generation = provider_obj.generate("arc-suggest", "arcs", prompt)
+        try:
+            suggestions = _extract_json_array(generation.text)
+        except ValueError:
+            atomic_write_text(raw_path, generation.text + "\n")
+            raise ValueError(f"AI arc suggestion did not return valid JSON. Raw output saved: {raw_path}")
+    except ProviderError as exc:
+        suggestions = _fallback_arc_suggestions(episode_id, limit)
+        atomic_write_text(raw_path, f"Provider failed: {exc}\n")
+    suggestions = _normalise_arc_suggestions(suggestions, default_episode=episode_id)
+    atomic_write_text(
+        suggestion_path,
+        f"# Arc Suggestions for {arc_slug}\n\n```json\n{json.dumps(suggestions, indent=2)}\n```\n",
+    )
+    return suggestions
+
+
+def _fallback_arc_suggestions(episode_id: str | None, limit: int) -> list[dict[str, str]]:
+    target = episode_id or "S01E02"
+    seeds = [
+        {"episode": target, "status": "planned", "beat": "Raise the season's central question."},
+        {"episode": target, "status": "planned", "beat": "Force the protagonist to take a side."},
+        {"episode": target, "status": "planned", "beat": "Pay off a setup from the pilot."},
+        {"episode": target, "status": "planned", "beat": "Introduce a complication for the antagonist."},
+        {"episode": target, "status": "planned", "beat": "Reveal an unexpected ally."},
+        {"episode": target, "status": "planned", "beat": "Set up the midseason turn."},
+    ]
+    return seeds[: max(1, limit)]
+
+
+def _normalise_arc_suggestions(
+    suggestions: list[dict[str, object]],
+    default_episode: str | None,
+) -> list[dict[str, str]]:
+    cleaned: list[dict[str, str]] = []
+    for entry in suggestions:
+        if not isinstance(entry, dict):
+            continue
+        beat = str(entry.get("beat", "")).strip()
+        if not beat:
+            continue
+        cleaned.append(
+            {
+                "episode": str(entry.get("episode") or default_episode or "S01E01").upper(),
+                "status": str(entry.get("status") or "planned").strip() or "planned",
+                "beat": beat,
+            }
+        )
+    return cleaned
+
+
+def _apply_arc_suggestions(
+    vault: Path,
+    arc_slug: str,
+    suggestions: list[dict[str, str]],
+) -> int:
+    for entry in suggestions:
+        add_arc_beat(vault, arc_slug, entry["episode"], entry["status"], entry["beat"])
+    return len(suggestions)
+
+
+def cmd_arcs_suggest(args: argparse.Namespace) -> int:
+    vault = resolve_vault(args.vault)
+    episode_id = _arc_episode_scope(vault, args)
+    suggestions = _generate_arc_suggestions(
+        vault, episode_id, args.provider, arc_slug=args.arc, limit=args.limit
+    )
+    if args.apply:
+        applied = _apply_arc_suggestions(vault, args.arc, suggestions)
+        print(f"Applied {applied} arc beat suggestion(s) to {args.arc}.")
+    elif args.json:
+        print(json.dumps(suggestions, indent=2, sort_keys=True))
+    else:
+        print(json.dumps(suggestions, indent=2))
+    return 0
 
 
 def _apply_cast_suggestions(vault: Path, episode_id: str | None, suggestions: list[dict[str, object]]) -> None:
