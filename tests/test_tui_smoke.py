@@ -60,3 +60,30 @@ async def test_navigate_through_all_panes(tmp_path: Path) -> None:
             app.post_message(SidebarSelection(section="nav", key=key))
             await pilot.pause()
             assert app.query(pane_cls)
+
+
+@pytest.mark.asyncio
+async def test_run_episode_with_mock_provider(tmp_path: Path) -> None:
+    import asyncio
+
+    from showbible.tui.app import ShowBibleApp
+    from showbible.tui.widgets.sidebar import SidebarSelection
+    from showbible.vault import ensure_episode
+
+    vault = init_vault(tmp_path / "Demo")
+    ensure_episode(vault, "S01E01")
+    app = ShowBibleApp(vault=vault, episode_id="S01E01", provider="mock")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.post_message(SidebarSelection(section="command", key="run"))
+        await pilot.pause()
+        # wait until the worker finishes (mock provider is fast)
+        for _ in range(50):
+            if app.state.runs:
+                handle = next(iter(app.state.runs.values()))
+                if handle.status in {"complete", "failed"}:
+                    break
+            await asyncio.sleep(0.1)
+        assert app.state.runs
+        handle = next(iter(app.state.runs.values()))
+        assert handle.status == "complete", handle.error

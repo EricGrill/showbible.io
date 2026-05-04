@@ -116,8 +116,44 @@ class ShowBibleApp(App):
             self._dispatch_run()
 
     def _dispatch_run(self) -> None:
-        # Replaced in Task 30 (Run worker).
-        self.notify("Run dispatch wired in Task 30.")
+        episode_id = self.state.current_episode
+        handle = self._run_registry.start(episode_id)
+        run_id = handle.run_id
+        self.state = self.state.with_runs(self._run_registry.snapshot())
+        self._update_chrome()
+        self.run_worker(
+            lambda: self._run_episode(run_id, episode_id),
+            thread=True,
+            name=f"run-{run_id}",
+            group="runs",
+            exclusive=False,
+        )
+
+    def _run_episode(self, run_id: str, episode_id: str) -> None:
+        from showbible.engine import run_episode
+
+        def progress(event: str, phase: str, payload: dict) -> None:
+            self.call_from_thread(self._run_registry.on_progress, run_id, event, phase, payload)
+            self.call_from_thread(self._propagate_runs)
+
+        try:
+            result = run_episode(self.state.vault, episode_id, self._provider, progress=progress)
+            message = (
+                f"Ran {result.episode_id}: {len(result.completed_phases)} phase(s), "
+                f"{len(result.skipped_phases)} skipped, {result.tokens} token(s)."
+            )
+            self.call_from_thread(self._run_registry.on_completed, run_id, message=message)
+            self.call_from_thread(self.notify, message)
+        except Exception as exc:  # noqa: BLE001
+            self.call_from_thread(self._run_registry.on_failed, run_id, error=str(exc))
+            self.call_from_thread(self.notify, f"{episode_id} failed: {exc}", severity="error")
+        finally:
+            self.call_from_thread(self._propagate_runs)
+
+    def _propagate_runs(self) -> None:
+        self.state = self.state.with_runs(self._run_registry.snapshot())
+        self._update_chrome()
+        self._populate_panes()
 
     def _mount_pane(self, pane) -> None:
         content = self.query_one("#content", Vertical)
