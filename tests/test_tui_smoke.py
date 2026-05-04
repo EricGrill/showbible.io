@@ -90,6 +90,26 @@ async def test_run_episode_with_mock_provider(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_numeric_pane_hotkeys(tmp_path: Path) -> None:
+    from showbible.tui.app import ShowBibleApp
+    from showbible.tui.panes.cast import CastPane
+    from showbible.tui.panes.lore import LorePane
+    from showbible.vault import ensure_episode
+
+    vault = init_vault(tmp_path / "Demo")
+    ensure_episode(vault, "S01E01")
+    app = ShowBibleApp(vault=vault, episode_id="S01E01", provider="mock")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await pilot.press("2")
+        await pilot.pause()
+        assert app.query(CastPane)
+        await pilot.press("4")
+        await pilot.pause()
+        assert app.query(LorePane)
+
+
+@pytest.mark.asyncio
 async def test_arc_suggest_modal_with_stub_provider(tmp_path: Path, monkeypatch) -> None:
     import asyncio
 

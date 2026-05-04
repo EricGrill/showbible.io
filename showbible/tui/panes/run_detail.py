@@ -8,6 +8,8 @@ from showbible.tui.panes.base import BasePane
 
 
 class RunDetailPane(BasePane):
+    PANE_TITLE = "Run Detail"
+
     def __init__(self, run_id: str) -> None:
         super().__init__(id=f"run-detail-{run_id}")
         self._run_id = run_id

@@ -28,13 +28,19 @@ from showbible.tui.widgets.sidebar import Sidebar, SidebarSelection
 class ShowBibleApp(App):
     CSS = """
     Screen { layout: vertical; }
-    #header-bar { height: 1; padding: 0 1; background: $accent 30%; }
+    #header-bar { height: 1; padding: 0 1; background: $accent 30%; color: $text; text-style: bold; }
     Horizontal#main { height: 1fr; }
     #content { padding: 1 2; }
+    BasePane:focus-within { border-left: thick $accent; }
     """
     BINDINGS = [
         Binding("q", "quit", "Quit"),
         Binding("ctrl+r", "refresh", "Refresh"),
+        Binding("1", "goto_pane('episodes')", "Episodes"),
+        Binding("2", "goto_pane('cast')", "Cast"),
+        Binding("3", "goto_pane('arc')", "Arc"),
+        Binding("4", "goto_pane('lore')", "Lore"),
+        Binding("5", "goto_pane('outputs')", "Outputs"),
     ]
 
     PANE_FACTORIES = {
@@ -90,6 +96,11 @@ class ShowBibleApp(App):
 
     def action_refresh(self) -> None:
         self._tick()
+
+    def action_goto_pane(self, pane_key: str) -> None:
+        factory = self.PANE_FACTORIES.get(pane_key)
+        if factory is not None:
+            self._mount_pane(factory())
 
     def on_sidebar_selection(self, message: SidebarSelection) -> None:
         if message.section == "command":

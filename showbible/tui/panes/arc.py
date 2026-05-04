@@ -19,6 +19,8 @@ class ArcAction(Message):
 
 
 class ArcPane(BasePane):
+    PANE_TITLE = "Arc"
+    ACTION_HINTS = "[a] add  [e] edit  [d] delete  [s] AI suggest"
     BINDINGS = [
         Binding("a", "add", "Add"),
         Binding("e", "edit", "Edit"),

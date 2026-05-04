@@ -21,6 +21,8 @@ class OutputAction(Message):
 
 
 class OutputsPane(BasePane):
+    PANE_TITLE = "Outputs"
+    ACTION_HINTS = "[e] edit in $EDITOR  [r] refresh preview"
     BINDINGS = [
         Binding("e", "edit", "Edit in $EDITOR"),
         Binding("r", "refresh_preview", "Refresh"),

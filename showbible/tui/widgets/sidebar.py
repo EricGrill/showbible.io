@@ -32,14 +32,15 @@ class SidebarSelection(Message):
 class Sidebar(Vertical):
     DEFAULT_CSS = """
     Sidebar {
-        width: 28;
+        width: 32;
         border-right: solid $accent;
-        padding: 1;
+        padding: 1 1;
     }
     Sidebar > Label {
         color: $accent;
         text-style: bold;
         margin-top: 1;
+        border-bottom: solid $accent;
     }
     """
 

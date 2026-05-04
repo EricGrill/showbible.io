@@ -16,6 +16,8 @@ class EpisodeSelected(Message):
 
 
 class EpisodesPane(BasePane):
+    PANE_TITLE = "Episodes"
+    ACTION_HINTS = "[n] new  [enter] select"
     BINDINGS = [
         Binding("n", "new", "New episode"),
     ]

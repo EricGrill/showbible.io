@@ -17,6 +17,8 @@ class LoreAction(Message):
 
 
 class LorePane(BasePane):
+    PANE_TITLE = "Lore"
+    ACTION_HINTS = "[a] add  [e] edit  [d] delete  [s] AI suggest"
     BINDINGS = [
         Binding("a", "add", "Add"),
         Binding("e", "edit", "Edit"),
