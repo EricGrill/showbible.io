@@ -168,7 +168,7 @@ requires-dist = [{ name = "textual", specifier = ">=0.86" }]
 [package.metadata.requires-dev]
 dev = [
     { name = "pytest", specifier = ">=9.0.3" },
-    { name = "pytest-asyncio", specifier = ">=0.24" },
+    { name = "pytest-asyncio", specifier = ">=1.0" },
 ]
 
 [[package]]
