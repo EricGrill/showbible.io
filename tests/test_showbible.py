@@ -962,3 +962,21 @@ def test_lore_suggest_falls_back_when_provider_fails(
     assert "fact" in output
     raw = (vault / "episodes" / "S01E01" / "lore-suggestions-raw.md").read_text(encoding="utf-8")
     assert "Provider failed" in raw
+
+
+def test_app_state_refresh_from_disk(tmp_path: Path) -> None:
+    from showbible.tui.state import AppState
+    from showbible.vault import add_arc_beat, add_lore_fact
+
+    vault = init_vault(tmp_path / "demo", show_name="Demo Show")
+    add_arc_beat(vault, "season-theme", "S01E01", "planned", "open the season")
+    add_lore_fact(vault, "The colony predates the founders.", source="S01E01")
+
+    state = AppState.empty(vault=vault, current_episode="S01E01").refreshed_from_disk()
+
+    assert state.show_name == "Demo Show"
+    assert state.current_episode == "S01E01"
+    assert "S01E01" in state.episodes
+    assert any(b.beat == "open the season" for b in state.arc_beats)
+    assert any(f.text == "The colony predates the founders." for f in state.lore_facts)
+    assert state.runs == {}
