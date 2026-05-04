@@ -41,6 +41,7 @@ class AISuggestScreen(ModalScreen[list[dict] | None]):
         self._loading = LoadingIndicator(id="ai-loading")
         self._status = Static(f"Generating {title}…", id="ai-status")
         self._selection: SelectionList | None = None
+        self._suggestions: list[dict[str, Any]] = []
         self._error: Static | None = None
 
     def compose(self) -> ComposeResult:
@@ -69,9 +70,11 @@ class AISuggestScreen(ModalScreen[list[dict] | None]):
                     container = self.query_one("#ai-container", Vertical)
                     container.mount(Button("Close", id="ai-close", variant="primary"))
                     return
+                self._suggestions = suggestions
                 self._status.update("Select suggestions to apply (space toggles, enter applies):")
+                # Use integer indices as values so SelectionList can hash them.
                 self._selection = SelectionList(
-                    *(Selection(self._format_row(item), item, initial_state=True) for item in suggestions),
+                    *(Selection(self._format_row(item), idx, initial_state=True) for idx, item in enumerate(suggestions)),
                     id="ai-selection",
                 )
                 container = self.query_one("#ai-container", Vertical)
@@ -84,4 +87,5 @@ class AISuggestScreen(ModalScreen[list[dict] | None]):
             self.dismiss(None)
             return
         if event.button.id == "ai-apply" and self._selection is not None:
-            self.dismiss(list(self._selection.selected))
+            selected_indices = list(self._selection.selected)
+            self.dismiss([self._suggestions[i] for i in selected_indices])

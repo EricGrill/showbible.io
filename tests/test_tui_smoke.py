@@ -87,3 +87,46 @@ async def test_run_episode_with_mock_provider(tmp_path: Path) -> None:
         assert app.state.runs
         handle = next(iter(app.state.runs.values()))
         assert handle.status == "complete", handle.error
+
+
+@pytest.mark.asyncio
+async def test_arc_suggest_modal_with_stub_provider(tmp_path: Path, monkeypatch) -> None:
+    import asyncio
+
+    from showbible.tui.app import ShowBibleApp
+    from showbible.tui.panes.arc import ArcAction
+    from showbible.tui.screens.ai_suggest import AISuggestScreen
+    from showbible.vault import ensure_episode
+
+    vault = init_vault(tmp_path / "Demo")
+    ensure_episode(vault, "S01E01")
+
+    class Provider:
+        name = "stub"
+
+        def generate(self, phase, episode_id, prompt):
+            return type(
+                "Generation",
+                (),
+                {
+                    "text": '[{"episode":"S01E01","status":"planned","beat":"raise the stakes"}]',
+                    "tokens": 0,
+                    "dollars": 0.0,
+                },
+            )()
+
+    monkeypatch.setattr("showbible.cli.resolve_provider", lambda name: Provider())
+
+    app = ShowBibleApp(vault=vault, episode_id="S01E01", provider="stub")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        app.post_message(ArcAction(action="suggest", arc_slug="season-theme"))
+        await pilot.pause()
+        # AISuggestScreen mounts; let the worker finish
+        for _ in range(30):
+            await asyncio.sleep(0.1)
+            if isinstance(app.screen, AISuggestScreen):
+                if app.screen.query("SelectionList"):
+                    break
+        assert isinstance(app.screen, AISuggestScreen)
+        assert app.screen.query("SelectionList")
