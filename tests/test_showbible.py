@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from showbible.artifacts import list_episode_artifacts, read_episode_artifact, write_episode_artifact
-from showbible.cli import _episode_edit_validator, _format_run_event, _run_dashboard_action, main
+from showbible.cli import main
 from showbible.engine import PHASES, _phase_prompt, run_episode
 from showbible.providers import LMStudioProvider, ProviderError, resolve_provider
 from showbible.server import make_server, serve, status_payload, transcript_text
@@ -234,56 +234,6 @@ def test_arcs_follow_current_episode_folder(tmp_path: Path, monkeypatch: pytest.
     assert "S01E07 [planned]" in output
     assert "Current arcs for S01E07" in output
     assert "hidden debt" in (vault / "arcs" / "season-theme.md").read_text(encoding="utf-8")
-
-
-def test_dashboard_actions_construct_show_without_leaving_workflow(tmp_path: Path) -> None:
-    vault = init_vault(tmp_path / "demo")
-    episode_id = "S01E01"
-
-    episode_id, message = _run_dashboard_action(vault, episode_id, "snapshot", "mock")
-    assert "ShowBible workflow for S01E01" in message
-
-    values = iter(["The pilot pays off a hidden debt."])
-    episode_id, message = _run_dashboard_action(
-        vault,
-        episode_id,
-        "arc-add",
-        "mock",
-        prompt=lambda label, default="": next(values),
-    )
-    assert "Added arc beat" in message
-    assert "S01E01 [planned] The pilot pays off" in (vault / "arcs" / "season-theme.md").read_text(encoding="utf-8")
-
-    values = iter(["The protagonist already knows the secret."])
-    episode_id, message = _run_dashboard_action(
-        vault,
-        episode_id,
-        "lore-add",
-        "mock",
-        prompt=lambda label, default="": next(values),
-    )
-    assert "Added lore fact" in message
-    assert "already knows the secret" in (vault / "lore-bible" / "canon.md").read_text(encoding="utf-8")
-
-    episode_id, message = _run_dashboard_action(vault, episode_id, "run", "mock")
-    assert "Ran S01E01" in message
-    assert read_json(vault / "episodes" / "S01E01" / "meta.json", {})["status"] == "done"
-
-    episode_id, message = _run_dashboard_action(vault, episode_id, "doctor", "mock")
-    assert message == "Doctor clean."
-
-
-def test_run_progress_event_text_is_visible() -> None:
-    assert _format_run_event("started", "pitch", {}) == "Starting phase: pitch. Waiting for model output..."
-    assert _format_run_event("completed", "pitch", {"tokens": 12}) == "Completed phase: pitch (12 token(s))."
-    assert _format_run_event("skipped", "break", {}) == "Skipped phase: break (already complete)."
-
-
-def test_episode_editor_key_hints_match_behavior() -> None:
-    assert _episode_edit_validator(ord("q")) == ord("q")
-    assert _episode_edit_validator(19) == 7
-    with pytest.raises(KeyboardInterrupt):
-        _episode_edit_validator(27)
 
 
 def test_cast_scope_follows_current_episode_folder(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -2,20 +2,15 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import curses
-import curses.textpad
 import io
 import json
 import os
 import re
 import subprocess
 import sys
-import threading
-import time
 from pathlib import Path
 
-from .artifacts import list_episode_artifacts, write_episode_artifact
-from .engine import PHASES, run_episode
+from .engine import run_episode
 from .providers import ProviderError, resolve_provider
 from .server import serve, status_payload, transcript_text
 from .vault import (
@@ -266,7 +261,7 @@ def build_parser() -> argparse.ArgumentParser:
     tui.add_argument("--episode", default="S01E01")
     tui.add_argument("--provider", default="lmstudio")
     tui.add_argument("--no-tui", action="store_true", help="print the workflow instead of opening the terminal UI")
-    tui.set_defaults(func=cmd_workflow)
+    tui.set_defaults(func=cmd_tui)
 
     lore = sub.add_parser("lore", help="inspect and administer lore")
     add_vault_flag(lore)
@@ -513,15 +508,20 @@ def cmd_transcript(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_workflow(args: argparse.Namespace) -> int:
+def cmd_tui(args: argparse.Namespace) -> int:
     vault = resolve_vault(args.vault)
     episode_id = args.episode or _current_episode(vault) or "S01E01"
     ensure_episode(vault, episode_id)
     _write_room_state(vault, "planning", episode_id=episode_id)
-    if not args.no_tui and sys.stdin.isatty() and sys.stdout.isatty():
-        return _workflow_tui(vault, episode_id, args.provider)
-    _print_workflow_snapshot(vault, episode_id, args.provider)
-    return 0
+    if args.no_tui or not (sys.stdin.isatty() and sys.stdout.isatty()):
+        _print_workflow_snapshot(vault, episode_id, args.provider)
+        return 0
+    from showbible.tui.app import ShowBibleApp
+    return ShowBibleApp(vault=vault, episode_id=episode_id, provider=args.provider).run() or 0
+
+
+def cmd_workflow(args: argparse.Namespace) -> int:
+    return cmd_tui(args)
 
 
 def cmd_lore(args: argparse.Namespace) -> int:
@@ -748,390 +748,11 @@ def _workflow_snapshot_text(vault: Path, episode_id: str, provider: str) -> str:
     )
 
 
-def _workflow_tui(vault: Path, episode_id: str, provider: str) -> int:
-    state = {"episode_id": episode_id, "message": "Dashboard ready. Press q when you are done."}
-
-    def draw(screen: "curses.window") -> int:
-        selected = 0
-        curses.curs_set(0)
-        screen.keypad(True)
-        while True:
-            actions = _dashboard_actions(state["episode_id"])
-            selected = min(selected, len(actions) - 1)
-            screen.erase()
-            height, width = screen.getmaxyx()
-            menu_width = max(28, min(42, width // 3))
-            screen.addnstr(0, 0, f"ShowBible dashboard - {vault.name}", width - 1, curses.A_BOLD)
-            screen.addnstr(1, 0, "enter run  [/] episode  r refresh  q quit", width - 1)
-            for index, (label, _action) in enumerate(actions[: max(0, height - 4)]):
-                attr = curses.A_REVERSE if index == selected else curses.A_NORMAL
-                screen.addnstr(index + 3, 0, label, menu_width - 1, attr)
-            panel_x = min(menu_width + 2, width - 1)
-            panel_width = max(1, width - panel_x)
-            for index, line in enumerate(_dashboard_panel_lines(vault, state["episode_id"], state["message"])):
-                if index + 3 >= height:
-                    break
-                attr = curses.A_BOLD if line.endswith(":") else curses.A_NORMAL
-                screen.addnstr(index + 3, panel_x, line, panel_width - 1, attr)
-            key = screen.getch()
-            if key in (ord("q"), 27):
-                return 0
-            if key == ord("r"):
-                state["message"] = "Refreshed."
-                continue
-            if key == ord("["):
-                state["episode_id"] = _adjacent_episode(vault, state["episode_id"], -1)
-                _write_room_state(vault, "planning", episode_id=state["episode_id"])
-                state["message"] = f"Selected {state['episode_id']}."
-                continue
-            if key == ord("]"):
-                state["episode_id"] = _adjacent_episode(vault, state["episode_id"], 1)
-                _write_room_state(vault, "planning", episode_id=state["episode_id"])
-                state["message"] = f"Selected {state['episode_id']}."
-                continue
-            if key in (curses.KEY_DOWN, ord("j")):
-                selected = min(len(actions) - 1, selected + 1)
-            elif key in (curses.KEY_UP, ord("k")):
-                selected = max(0, selected - 1)
-            elif key in (curses.KEY_ENTER, 10, 13):
-                action = actions[selected][1]
-                if action == "quit":
-                    return 0
-                if action == "run":
-                    state["message"] = _run_dashboard_live(screen, vault, state["episode_id"], provider)
-                elif action == "outputs":
-                    state["message"] = _episode_outputs_tui(screen, vault, state["episode_id"])
-                elif action == "cast":
-                    state["message"] = _cast_tui(screen, vault, state["episode_id"], provider)
-                elif action == "episodes":
-                    state["episode_id"], state["message"] = _episodes_tui(screen, vault, state["episode_id"])
-                else:
-                    state["episode_id"], state["message"] = _run_dashboard_action(
-                        vault,
-                        state["episode_id"],
-                        action,
-                        provider,
-                        prompt=lambda label, default="": _prompt_dashboard_line(screen, label, default),
-                    )
-        return 0
-
-    return curses.wrapper(draw)
-
-
-def _run_dashboard_live(screen: "curses.window", vault: Path, episode_id: str, provider: str) -> str:
-    events: list[str] = []
-    result: dict[str, object] = {"done": False, "message": "", "error": None}
-    lock = threading.Lock()
-
-    def progress(event: str, phase: str, payload: dict[str, object]) -> None:
-        line = _format_run_event(event, phase, payload)
-        if not line:
-            return
-        with lock:
-            events.append(line)
-
-    def worker() -> None:
-        try:
-            run = run_episode(vault, episode_id, provider, progress=progress)
-            result["message"] = (
-                f"Ran {run.episode_id}: {len(run.completed_phases)} phase(s), "
-                f"{len(run.skipped_phases)} skipped, {run.tokens} token(s)."
-            )
-        except Exception as exc:  # noqa: BLE001 - surface runtime failure inside dashboard
-            result["error"] = exc
-        finally:
-            result["done"] = True
-
-    thread = threading.Thread(target=worker, daemon=True)
-    thread.start()
-    spinner = "|/-\\"
-    tick = 0
-    screen.nodelay(True)
-    try:
-        while not result["done"]:
-            _draw_run_progress(screen, vault, episode_id, events, f"Running {spinner[tick % len(spinner)]}")
-            tick += 1
-            time.sleep(0.15)
-        message = str(result["message"] or "")
-        if result["error"]:
-            message = f"Run failed: {result['error']}"
-        with lock:
-            if message:
-                events.append(message)
-        _draw_run_progress(screen, vault, episode_id, events, "Complete. Press any key to return.")
-        screen.nodelay(False)
-        screen.getch()
-        return message
-    finally:
-        screen.nodelay(False)
-
-
-def _format_run_event(event: str, phase: str, payload: dict[str, object]) -> str:
-    if event == "episode-started":
-        return f"Starting {phase} with provider {payload.get('provider', 'unknown')}."
-    if event == "started":
-        return f"Starting phase: {phase}. Waiting for model output..."
-    if event == "completed":
-        return f"Completed phase: {phase} ({payload.get('tokens', 0)} token(s))."
-    if event == "skipped":
-        return f"Skipped phase: {phase} (already complete)."
-    if event == "episode-completed":
-        return f"Episode complete: {phase}."
-    return ""
-
-
-def _draw_run_progress(
-    screen: "curses.window",
-    vault: Path,
-    episode_id: str,
-    events: list[str],
-    status: str,
-) -> None:
-    screen.erase()
-    height, width = screen.getmaxyx()
-    meta = read_json(vault / "episodes" / episode_id / "meta.json", {})
-    completed = set(meta.get("completed_phases", []))
-    current = meta.get("current_phase")
-    screen.addnstr(0, 0, f"Running {episode_id}", width - 1, curses.A_BOLD)
-    screen.addnstr(1, 0, status, width - 1)
-    screen.addnstr(3, 0, "Phases:", width - 1, curses.A_BOLD)
-    for index, phase in enumerate(PHASES):
-        if phase in completed:
-            marker = "[x]"
-        elif phase == current:
-            marker = "[>]"
-        else:
-            marker = "[ ]"
-        screen.addnstr(4 + index, 0, f"{marker} {phase}", width - 1)
-    log_y = 5 + len(PHASES)
-    screen.addnstr(log_y, 0, "Live log:", width - 1, curses.A_BOLD)
-    visible = events[-max(1, height - log_y - 2) :]
-    for index, line in enumerate(visible):
-        if log_y + 1 + index >= height:
-            break
-        screen.addnstr(log_y + 1 + index, 0, line, width - 1)
-    screen.refresh()
-
-
-def _dashboard_actions(episode_id: str) -> list[tuple[str, str]]:
-    return [
-        ("Show snapshot", "snapshot"),
-        ("Manage episodes", "episodes"),
-        ("Manage cast", "cast"),
-        (f"Add {episode_id} arc beat", "arc-add"),
-        (f"Add {episode_id} lore fact", "lore-add"),
-        (f"View/edit {episode_id} outputs", "outputs"),
-        (f"Run {episode_id}", "run"),
-        ("Doctor", "doctor"),
-        ("Quit", "quit"),
-    ]
-
-
-def _run_dashboard_action(
-    vault: Path,
-    episode_id: str,
-    action: str,
-    provider: str,
-    prompt: object | None = None,
-) -> tuple[str, str]:
-    if action == "snapshot":
-        return episode_id, _workflow_snapshot_text(vault, episode_id, provider)
-    if action == "arc-add":
-        beat = _dashboard_prompt(prompt, "Arc beat", "Pilot tests the season theme.")
-        if not beat:
-            return episode_id, "Cancelled: arc beat is required."
-        output = _capture_cli_output(
-            cmd_arcs_add,
-            argparse.Namespace(vault=str(vault), episode=episode_id, arc="season-theme", status="planned", beat=beat),
-        )
-        return episode_id, output
-    if action == "lore-add":
-        fact = _dashboard_prompt(prompt, "Lore fact", "")
-        if not fact:
-            return episode_id, "Cancelled: lore fact is required."
-        output = _capture_cli_output(
-            cmd_lore_add,
-            argparse.Namespace(vault=str(vault), fact=fact, source=episode_id),
-        )
-        return episode_id, output
-    if action == "run":
-        output = _capture_cli_output(
-            cmd_run,
-            argparse.Namespace(
-                vault=str(vault),
-                episode=episode_id,
-                season=False,
-                provider=provider,
-                note=[],
-                speak_as=[],
-                keep_going=False,
-            ),
-        )
-        return episode_id, output
-    if action == "doctor":
-        findings = doctor(vault)
-        if not findings:
-            return episode_id, "Doctor clean."
-        return episode_id, "\n".join(f"{item.level}: {item.path}: {item.message}" for item in findings)
-    return episode_id, "No action."
-
-
-def _episode_outputs_tui(screen: "curses.window", vault: Path, episode_id: str) -> str:
-    selected = 0
-    top_line = 0
-    message = "browse: e edits, q returns | editor: Ctrl-G/Ctrl-S saves, Esc cancels"
-    while True:
-        artifacts = list_episode_artifacts(vault, episode_id)
-        selected = min(selected, max(0, len(artifacts) - 1))
-        screen.erase()
-        height, width = screen.getmaxyx()
-        menu_width = max(26, min(38, width // 3))
-        screen.addnstr(0, 0, f"Episode outputs - {episode_id}", width - 1, curses.A_BOLD)
-        screen.addnstr(1, 0, message, width - 1)
-        for index, artifact in enumerate(artifacts[: max(0, height - 4)]):
-            marker = "*" if artifact["exists"] else " "
-            attr = curses.A_REVERSE if index == selected else curses.A_NORMAL
-            screen.addnstr(index + 3, 0, f"{marker} {artifact['label']}", menu_width - 1, attr)
-        panel_x = min(menu_width + 2, width - 1)
-        panel_width = max(1, width - panel_x)
-        artifact = artifacts[selected] if artifacts else None
-        if artifact:
-            lines = str(artifact["content"] or "No content yet.").splitlines() or ["No content yet."]
-            header = f"{artifact['label']} - {artifact['path']}"
-            screen.addnstr(3, panel_x, header, panel_width - 1, curses.A_BOLD)
-            max_body = max(0, height - 5)
-            top_line = min(top_line, max(0, len(lines) - max_body))
-            for index, line in enumerate(lines[top_line : top_line + max_body]):
-                screen.addnstr(index + 4, panel_x, line, panel_width - 1)
-        key = screen.getch()
-        if key in (ord("q"), 27):
-            return "Returned from episode outputs."
-        if key in (curses.KEY_DOWN, ord("j")):
-            selected = min(len(artifacts) - 1, selected + 1)
-            top_line = 0
-        elif key in (curses.KEY_UP, ord("k")):
-            selected = max(0, selected - 1)
-            top_line = 0
-        elif key in (curses.KEY_NPAGE, ord("J")):
-            top_line += max(1, height - 6)
-        elif key in (curses.KEY_PPAGE, ord("K")):
-            top_line = max(0, top_line - max(1, height - 6))
-        elif key in (ord("e"),) and artifact:
-            saved = _edit_episode_artifact_tui(screen, vault, episode_id, str(artifact["id"]), str(artifact["content"]))
-            message = saved
-
-
-def _edit_episode_artifact_tui(
-    screen: "curses.window",
-    vault: Path,
-    episode_id: str,
-    artifact_id: str,
-    content: str,
-) -> str:
-    height, width = screen.getmaxyx()
-    edit_height = max(5, height - 5)
-    edit_width = max(20, width - 2)
-    buffer_lines = content.splitlines() or [""]
-    buffer_lines = buffer_lines[: edit_height - 1]
-    screen.erase()
-    screen.addnstr(
-        0,
-        0,
-        f"Editing {artifact_id} - Ctrl-G/Ctrl-S saves, Esc cancels, q types q",
-        width - 1,
-        curses.A_BOLD,
-    )
-    win = curses.newwin(edit_height, edit_width, 2, 1)
-    win.keypad(True)
-    for index, line in enumerate(buffer_lines):
-        win.addnstr(index, 0, line, edit_width - 1)
-    box = curses.textpad.Textbox(win, insert_mode=True)
-    try:
-        updated = box.edit(_episode_edit_validator)
-    except KeyboardInterrupt:
-        return "Edit cancelled."
-    updated = updated.rstrip() + "\n"
-    write_episode_artifact(vault, episode_id, artifact_id, updated)
-    return f"Saved {artifact_id}."
-
-
-def _episode_edit_validator(key: int) -> int:
-    if key == 19:
-        return 7
-    if key == 27:
-        raise KeyboardInterrupt
-    return key
-
-
-def _dashboard_prompt(prompt: object | None, label: str, default: str = "") -> str | None:
-    if prompt is None:
-        return default
-    value = prompt(label, default)  # type: ignore[operator]
-    if value is None:
-        return None
-    return str(value).strip() or default
-
-
 def _capture_cli_output(func: object, args: argparse.Namespace) -> str:
     buffer = io.StringIO()
     with contextlib.redirect_stdout(buffer):
         func(args)  # type: ignore[operator]
     return buffer.getvalue().strip()
-
-
-def _prompt_dashboard_line(screen: "curses.window", label: str, default: str = "") -> str | None:
-    height, width = screen.getmaxyx()
-    prompt = f"{label}"
-    if default:
-        prompt += f" [{default}]"
-    prompt += ": "
-    screen.move(max(0, height - 2), 0)
-    screen.clrtoeol()
-    screen.addnstr(max(0, height - 2), 0, prompt, width - 1, curses.A_BOLD)
-    screen.move(max(0, height - 1), 0)
-    screen.clrtoeol()
-    curses.echo()
-    try:
-        raw = screen.getstr(max(0, height - 1), 0, max(1, width - 1))
-    finally:
-        curses.noecho()
-    value = raw.decode("utf-8", errors="ignore").strip()
-    return value or default
-
-
-def _dashboard_panel_lines(vault: Path, episode_id: str, message: str) -> list[str]:
-    ensure_episode(vault, episode_id)
-    meta = read_json(vault / "episodes" / episode_id / "meta.json", {})
-    episodes = list_episodes(vault)
-    costs = read_json(vault / ".room" / "costs.json", {})
-    findings = doctor(vault)
-    lines = [
-        "Show:",
-        f"Vault: {vault}",
-        f"Episodes: {', '.join(episodes) or 'none'}",
-        f"Selected: {episode_id} ({meta.get('status', 'created')})",
-        f"Completed phases: {len(meta.get('completed_phases', []))}",
-        f"Cost: {costs.get('total_tokens', 0)} token(s), ${costs.get('total_dollars', 0.0):.4f}",
-        f"Doctor: {'clean' if not findings else str(len(findings)) + ' finding(s)'}",
-        "",
-        "Current Cast:",
-    ]
-    roles = effective_cast_roles(vault, episode_id)
-    people_by_slug = {person["slug"]: person for person in people(vault)}
-    if roles:
-        for role in roles[:8]:
-            display = people_by_slug.get(role.person, {}).get("display_name", role.person)
-            plays = f" as {role.plays}" if role.plays else ""
-            lines.append(f"- {role.kind}: {display}{plays}")
-        if len(roles) > 8:
-            lines.append(f"- ... {len(roles) - 8} more")
-    else:
-        lines.append("- no cast roles set")
-    lines.extend(["", "Current Arcs:"])
-    lines.extend(_format_current_arcs(vault, episode_id).strip().splitlines()[1:8])
-    lines.extend(["", "Last Action:"])
-    lines.extend((message or "No action yet.").splitlines()[:10])
-    return lines
 
 
 def _next_episode_id(episodes: list[str]) -> str:
@@ -1330,20 +951,13 @@ def cmd_cast_suggest(args: argparse.Namespace) -> int:
     if args.apply:
         _apply_cast_suggestions(vault, episode_id, suggestions)
         print(f"Applied {len(suggestions)} cast suggestion(s) to {'episode ' + episode_id if episode_id else 'show'}.")
-    elif args.pick or _should_pick(args):
-        picked = _pick_cast_suggestions(suggestions, f"{_show_name_from_pack((vault / 'pack.yaml').read_text(encoding='utf-8')) or vault.name} cast suggestions")
-        if picked:
-            _apply_cast_suggestions(vault, episode_id, picked)
-            print(f"Applied {len(picked)} selected cast suggestion(s) to {'episode ' + episode_id if episode_id else 'show'}.")
-        else:
-            print("No cast suggestions applied.")
     elif args.json:
         print(json.dumps(suggestions, indent=2, sort_keys=True))
     else:
         print(json.dumps(suggestions, indent=2))
         suggestion_path = (vault / "episodes" / episode_id / "cast-suggestions.md") if episode_id else (vault / "research" / "cast-suggestions.md")
         print(f"Saved suggestions: {suggestion_path}")
-        print("Run from a terminal for the picker, or use --pick / --apply / --json.")
+        print("Use --apply to write all suggestions, or --json for machine output.")
     return 0
 
 
@@ -1613,59 +1227,6 @@ def _apply_cast_suggestions(vault: Path, episode_id: str | None, suggestions: li
             add_cast_role(vault, role)
 
 
-def _should_pick(args: argparse.Namespace) -> bool:
-    return not args.json and not args.apply and sys.stdin.isatty() and sys.stdout.isatty()
-
-
-def _pick_cast_suggestions(suggestions: list[dict[str, object]], title: str) -> list[dict[str, object]]:
-    if not suggestions:
-        return []
-    if not sys.stdin.isatty() or not sys.stdout.isatty():
-        print(json.dumps(suggestions, indent=2))
-        print("No interactive terminal detected; rerun with --apply to accept all suggestions.")
-        return []
-    selected = set()
-    current = 0
-
-    def draw(screen: "curses.window") -> None:
-        nonlocal current, selected
-        curses.curs_set(0)
-        screen.keypad(True)
-        while True:
-            screen.erase()
-            height, width = screen.getmaxyx()
-            screen.addnstr(0, 0, f"ShowBible - {title}", width - 1, curses.A_BOLD)
-            screen.addnstr(1, 0, "space select  enter apply  a all  q cancel", width - 1)
-            for index, item in enumerate(suggestions[: max(0, height - 4)]):
-                marker = "[x]" if index in selected else "[ ]"
-                plays = f" as {item.get('plays')}" if item.get("plays") else ""
-                line = f"{marker} {item.get('kind', 'actor')}: {item.get('person')} ({item.get('display_name', '')}){plays}"
-                attr = curses.A_REVERSE if index == current else curses.A_NORMAL
-                screen.addnstr(index + 3, 0, line, width - 1, attr)
-            key = screen.getch()
-            if key in (ord("q"), 27):
-                selected.clear()
-                return
-            if key in (curses.KEY_DOWN, ord("j")):
-                current = min(len(suggestions) - 1, current + 1)
-            elif key in (curses.KEY_UP, ord("k")):
-                current = max(0, current - 1)
-            elif key == ord(" "):
-                if current in selected:
-                    selected.remove(current)
-                else:
-                    selected.add(current)
-            elif key == ord("a"):
-                selected = set(range(len(suggestions)))
-            elif key in (curses.KEY_ENTER, 10, 13):
-                if not selected:
-                    selected.add(current)
-                return
-
-    curses.wrapper(draw)
-    return [suggestions[index] for index in sorted(selected)]
-
-
 def _extract_json_array(text: str) -> list[dict[str, object]]:
     cleaned = text.strip()
     if cleaned.startswith("```"):
@@ -1783,249 +1344,6 @@ def _write_room_state(vault: Path, status: str, episode_id: str | None = None) -
     if episode_id:
         state["current_episode"] = episode_id
     atomic_write_json(vault / ".room" / "state.json", state)
-
-
-def _cast_tui(screen: "curses.window", vault: Path, episode_id: str, provider: str) -> str:
-    selected = 0
-    message = "Cast manager"
-    while True:
-        show_roles = cast_roles(vault)
-        ep_roles = episode_cast_roles(vault, episode_id) if episode_id else []
-        effective = effective_cast_roles(vault, episode_id)
-        people_by_slug = {person["slug"]: person for person in people(vault)}
-        items: list[dict[str, object]] = []
-        for role in effective:
-            scope = "episode" if any(r.person == role.person for r in ep_roles) else "show"
-            display = people_by_slug.get(role.person, {}).get("display_name", role.person)
-            items.append({"role": role, "scope": scope, "display": display})
-        screen.erase()
-        height, width = screen.getmaxyx()
-        menu_width = max(26, min(42, width // 3))
-        screen.addnstr(0, 0, f"Cast - {'episode ' + episode_id if episode_id else 'show'}", width - 1, curses.A_BOLD)
-        screen.addnstr(1, 0, "j/k move  a add  d delete  e edit  s AI suggest  q return", width - 1)
-        max_list = max(0, height - 4)
-        for index, item in enumerate(items[:max_list]):
-            role = item["role"]
-            tag = "[ep]" if item["scope"] == "episode" else "[sh]"
-            line = f"{tag} {role.kind}: {item['display']}"
-            attr = curses.A_REVERSE if index == selected else curses.A_NORMAL
-            screen.addnstr(index + 3, 0, line, menu_width - 1, attr)
-        add_index = len(items)
-        if add_index < max_list:
-            attr = curses.A_REVERSE if selected == add_index else curses.A_NORMAL
-            screen.addnstr(add_index + 3, 0, "+ Add new cast member", menu_width - 1, attr)
-        panel_x = min(menu_width + 2, width - 1)
-        panel_width = max(1, width - panel_x)
-        if selected < len(items):
-            item = items[selected]
-            role = item["role"]
-            lines = [
-                f"kind: {role.kind}",
-                f"person: {role.person}",
-                f"display: {item['display']}",
-                f"plays: {role.plays or '-'}",
-                f"scope: {item['scope']}",
-                f"file: people/{role.person}.md",
-            ]
-        else:
-            lines = ["Select a cast member or choose + Add new."]
-        for index, line in enumerate(lines[:max_list]):
-            screen.addnstr(index + 3, panel_x, line, panel_width - 1)
-        key = screen.getch()
-        if key in (ord("q"), 27):
-            return message
-        if key in (curses.KEY_DOWN, ord("j")):
-            selected = min(len(items), selected + 1)
-        elif key in (curses.KEY_UP, ord("k")):
-            selected = max(0, selected - 1)
-        elif key == ord("a"):
-            display = _prompt_dashboard_line(screen, "Display name", "")
-            if not display:
-                message = "Add cancelled."
-                continue
-            kind = _prompt_dashboard_line(screen, "Kind", "actor") or "actor"
-            plays = _prompt_dashboard_line(screen, "Plays/character slug", "") or None
-            scope = (_prompt_dashboard_line(screen, "Scope [show]", "show") or "show").strip().lower()
-            slug = slugify(display)
-            write_person(vault, slug, display, kind, plays)
-            role = CastRole(kind=kind, person=slug, plays=plays)
-            if scope == "episode" and episode_id:
-                add_episode_cast_role(vault, episode_id, role)
-                message = f"Added {kind} {display} to episode {episode_id}."
-            else:
-                add_cast_role(vault, role)
-                message = f"Added show {kind} {display}."
-        elif key == ord("d"):
-            if selected < len(items):
-                item = items[selected]
-                role = item["role"]
-                if item["scope"] == "episode" and episode_id:
-                    remove_episode_cast_role(vault, episode_id, role.person)
-                else:
-                    remove_cast_role(vault, role.person)
-                message = f"Removed {role.person}."
-                selected = max(0, selected - 1)
-        elif key == ord("e"):
-            if selected < len(items):
-                item = items[selected]
-                role = item["role"]
-                kind = _prompt_dashboard_line(screen, "Kind", role.kind) or role.kind
-                plays = _prompt_dashboard_line(screen, "Plays", role.plays or "") or None
-                if item["scope"] == "episode" and episode_id:
-                    add_episode_cast_role(vault, episode_id, CastRole(kind=kind, person=role.person, plays=plays))
-                else:
-                    add_cast_role(vault, CastRole(kind=kind, person=role.person, plays=plays))
-                message = f"Updated {role.person}."
-        elif key == ord("s"):
-            message = _cast_suggest_tui(screen, vault, episode_id, provider)
-
-
-def _cast_suggest_tui(screen: "curses.window", vault: Path, episode_id: str | None, provider: str) -> str:
-    suggestions: list[dict[str, object]] = []
-    error: str | None = None
-    lock = threading.Lock()
-    done = False
-
-    def worker() -> None:
-        nonlocal suggestions, error, done
-        try:
-            suggestions = _generate_cast_suggestions(vault, episode_id, provider, limit=6)
-        except Exception as exc:  # noqa: BLE001
-            error = str(exc)
-        finally:
-            with lock:
-                done = True
-
-    thread = threading.Thread(target=worker, daemon=True)
-    thread.start()
-    spinner = "|/-\\"
-    tick = 0
-    screen.nodelay(True)
-    try:
-        while True:
-            with lock:
-                if done:
-                    break
-            screen.erase()
-            height, width = screen.getmaxyx()
-            screen.addnstr(0, 0, "AI Cast Suggestions", width - 1, curses.A_BOLD)
-            screen.addnstr(2, 0, f"Generating suggestions... {spinner[tick % len(spinner)]}", width - 1)
-            tick += 1
-            time.sleep(0.15)
-    finally:
-        screen.nodelay(False)
-    if error:
-        return f"Suggestion failed: {error}"
-    if not suggestions:
-        return "No suggestions returned."
-    picked = _pick_items_screen(
-        screen,
-        suggestions,
-        "Select cast suggestions to apply",
-        lambda item: f"{item.get('kind', 'actor')}: {item.get('person')} ({item.get('display_name', '')})"
-        + (f" as {item.get('plays')}" if item.get("plays") else ""),
-    )
-    if picked:
-        _apply_cast_suggestions(vault, episode_id, picked)
-        return f"Applied {len(picked)} suggestion(s)."
-    return "No suggestions applied."
-
-
-def _pick_items_screen(
-    screen: "curses.window",
-    items: list[dict[str, object]],
-    title: str,
-    format_fn: object,
-) -> list[dict[str, object]]:
-    if not items:
-        return []
-    selected: set[int] = set()
-    current = 0
-    while True:
-        screen.erase()
-        height, width = screen.getmaxyx()
-        screen.addnstr(0, 0, title, width - 1, curses.A_BOLD)
-        screen.addnstr(1, 0, "space select  enter apply  a all  q cancel", width - 1)
-        for index, item in enumerate(items[: max(0, height - 4)]):
-            marker = "[x]" if index in selected else "[ ]"
-            line = f"{marker} {format_fn(item)}"
-            attr = curses.A_REVERSE if index == current else curses.A_NORMAL
-            screen.addnstr(index + 3, 0, line, width - 1, attr)
-        key = screen.getch()
-        if key in (ord("q"), 27):
-            return []
-        if key in (curses.KEY_DOWN, ord("j")):
-            current = min(len(items) - 1, current + 1)
-        elif key in (curses.KEY_UP, ord("k")):
-            current = max(0, current - 1)
-        elif key == ord(" "):
-            if current in selected:
-                selected.remove(current)
-            else:
-                selected.add(current)
-        elif key == ord("a"):
-            selected = set(range(len(items)))
-        elif key in (curses.KEY_ENTER, 10, 13):
-            if not selected:
-                selected.add(current)
-            return [items[i] for i in sorted(selected)]
-
-
-def _episodes_tui(screen: "curses.window", vault: Path, current_episode_id: str) -> tuple[str, str]:
-    selected = 0
-    message = "No change."
-    while True:
-        episodes = list_episodes(vault)
-        items = episodes + ["+ New episode"]
-        selected = min(selected, len(items) - 1)
-        screen.erase()
-        height, width = screen.getmaxyx()
-        menu_width = max(26, min(38, width // 3))
-        screen.addnstr(0, 0, f"Episodes - {vault.name}", width - 1, curses.A_BOLD)
-        screen.addnstr(1, 0, "j/k move  n new  enter select  q return", width - 1)
-        max_list = max(0, height - 4)
-        for index, item in enumerate(items[:max_list]):
-            marker = ">" if item == current_episode_id else " "
-            label = item
-            attr = curses.A_REVERSE if index == selected else curses.A_NORMAL
-            screen.addnstr(index + 3, 0, f"{marker} {label}", menu_width - 1, attr)
-        panel_x = min(menu_width + 2, width - 1)
-        panel_width = max(1, width - panel_x)
-        if selected < len(episodes):
-            ep_id = episodes[selected]
-            meta = read_json(vault / "episodes" / ep_id / "meta.json", {})
-            lines = [
-                f"episode: {ep_id}",
-                f"status: {meta.get('status', 'created')}",
-                f"completed phases: {len(meta.get('completed_phases', []))}",
-                f"cast overrides: {len(meta.get('cast_overrides', []))}",
-            ]
-        else:
-            lines = ["Create a new episode."]
-        for index, line in enumerate(lines[:max_list]):
-            screen.addnstr(index + 3, panel_x, line, panel_width - 1)
-        key = screen.getch()
-        if key in (ord("q"), 27):
-            return current_episode_id, message
-        if key in (curses.KEY_DOWN, ord("j")):
-            selected = min(len(items) - 1, selected + 1)
-        elif key in (curses.KEY_UP, ord("k")):
-            selected = max(0, selected - 1)
-        elif key == ord("n") or (key in (curses.KEY_ENTER, 10, 13) and selected == len(episodes)):
-            default_id = _next_episode_id(episodes)
-            new_id = _prompt_dashboard_line(screen, "New episode id", default_id)
-            if new_id:
-                ensure_episode(vault, new_id)
-                message = f"Created episode {new_id}."
-                current_episode_id = new_id
-                _write_room_state(vault, "planning", episode_id=new_id)
-                return current_episode_id, message
-        elif key in (curses.KEY_ENTER, 10, 13):
-            ep_id = episodes[selected]
-            message = f"Selected episode {ep_id}."
-            current_episode_id = ep_id
-            _write_room_state(vault, "planning", episode_id=ep_id)
-            return current_episode_id, message
 
 
 def main(argv: list[str] | None = None) -> int:
