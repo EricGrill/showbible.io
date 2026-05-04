@@ -768,3 +768,26 @@ def test_update_arc_beat_preserves_trailing_newline(tmp_path: Path) -> None:
     )
     text = (vault / "arcs" / "ensemble.md").read_text(encoding="utf-8")
     assert text.endswith("\n")
+
+
+def test_lore_facts_parses_canon(tmp_path: Path) -> None:
+    from showbible.vault import lore_facts
+
+    vault = init_vault(tmp_path / "demo")
+    atomic_write_text(
+        vault / "lore-bible" / "canon.md",
+        "# Canon\n\n"
+        "## Facts\n\n"
+        "- **Manual fact** - The protocol is older than the colony. *Source: S01E02*\n"
+        "- **Manual fact** - The bell only rings on the equinox. *Source: manual*\n"
+        "- A bare bullet survives untouched.\n",
+    )
+
+    facts = lore_facts(vault)
+
+    assert [(f.text, f.source) for f in facts] == [
+        ("The protocol is older than the colony.", "S01E02"),
+        ("The bell only rings on the equinox.", "manual"),
+        ("A bare bullet survives untouched.", "manual"),
+    ]
+    assert facts[0].file == vault / "lore-bible" / "canon.md"

@@ -37,6 +37,13 @@ class ArcBeat:
     file: Path
 
 
+@dataclass(frozen=True)
+class LoreFact:
+    text: str
+    source: str
+    file: Path
+
+
 DEFAULT_PACK = """schema: 1
 show:
   name: {show_name}
@@ -603,3 +610,32 @@ def copy_episode(vault: Path, source_id: str, target_id: str) -> Path:
     meta["forked_from"] = source_id
     write_episode_meta(target, meta)
     return target
+
+
+_LORE_FACT_RE = re.compile(
+    r"^-\s*(?:\*\*Manual fact\*\*\s*-\s*)?(.+?)(?:\s*\*Source:\s*([^*]+?)\s*\*)?\s*$"
+)
+
+
+def lore_facts(vault: Path) -> list[LoreFact]:
+    canon = vault / "lore-bible" / "canon.md"
+    if not canon.exists():
+        return []
+    in_facts = False
+    results: list[LoreFact] = []
+    for raw in canon.read_text(encoding="utf-8").splitlines():
+        line = raw.rstrip()
+        stripped = line.lstrip()
+        if stripped.startswith("## "):
+            in_facts = stripped.lower().startswith("## facts")
+            continue
+        if not in_facts:
+            continue
+        match = _LORE_FACT_RE.match(stripped)
+        if not match:
+            continue
+        text = match.group(1).strip()
+        source = (match.group(2) or "manual").strip()
+        if text:
+            results.append(LoreFact(text=text, source=source, file=canon))
+    return results
