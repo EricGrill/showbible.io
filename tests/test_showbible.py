@@ -903,3 +903,62 @@ def test_arcs_suggest_falls_back_when_provider_fails(
     assert "beat" in output
     raw = (vault / "episodes" / "S01E01" / "arc-suggestions-raw.md").read_text(encoding="utf-8")
     assert "Provider failed" in raw
+
+
+def test_lore_suggest_applies_with_stub_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from showbible.vault import lore_facts
+
+    vault = init_vault(tmp_path / "demo", show_name="Demo Show")
+
+    class Provider:
+        name = "stub"
+
+        def generate(self, phase: str, episode_id: str, prompt: str):
+            return type(
+                "Generation",
+                (),
+                {
+                    "text": '[{"fact":"The crown is older than the kingdom."},'
+                            '{"fact":"Only the seer remembers the founding name."}]',
+                    "tokens": 0,
+                    "dollars": 0.0,
+                },
+            )()
+
+    monkeypatch.setattr("showbible.cli.resolve_provider", lambda name: Provider())
+
+    assert main(
+        ["lore", "suggest", "--vault", str(vault), "--episode", "S01E01", "--apply"]
+    ) == 0
+
+    facts = [f.text for f in lore_facts(vault)]
+    assert "The crown is older than the kingdom." in facts
+    assert "Only the seer remembers the founding name." in facts
+
+
+def test_lore_suggest_falls_back_when_provider_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    vault = init_vault(tmp_path / "demo", show_name="Demo Show")
+
+    class Provider:
+        name = "broken"
+
+        def generate(self, phase: str, episode_id: str, prompt: str):
+            raise ProviderError("offline")
+
+    monkeypatch.setattr("showbible.cli.resolve_provider", lambda name: Provider())
+
+    assert main(
+        ["lore", "suggest", "--vault", str(vault), "--episode", "S01E01", "--json"]
+    ) == 0
+
+    output = capsys.readouterr().out
+    assert "fact" in output
+    raw = (vault / "episodes" / "S01E01" / "lore-suggestions-raw.md").read_text(encoding="utf-8")
+    assert "Provider failed" in raw

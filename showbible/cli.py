@@ -25,6 +25,7 @@ from .vault import (
     add_cast_role,
     arc_beats,
     add_lore_fact,
+    lore_facts,
     add_episode_cast_role,
     atomic_write_json,
     atomic_write_text,
@@ -284,6 +285,14 @@ def build_parser() -> argparse.ArgumentParser:
     lore_paths = lore_sub.add_parser("paths", help="show lore files")
     add_vault_flag(lore_paths)
     lore_paths.set_defaults(func=cmd_lore_paths)
+    lore_suggest = lore_sub.add_parser("suggest", help="suggest canon facts with the AI provider")
+    add_vault_flag(lore_suggest)
+    lore_suggest.add_argument("--episode", help="episode scope; defaults from cwd or room state")
+    lore_suggest.add_argument("--provider", default="lmstudio")
+    lore_suggest.add_argument("--limit", type=int, default=6)
+    lore_suggest.add_argument("--apply", action="store_true")
+    lore_suggest.add_argument("--json", action="store_true")
+    lore_suggest.set_defaults(func=cmd_lore_suggest)
     lore.set_defaults(func=cmd_lore)
 
     arcs = sub.add_parser("arcs", help="inspect and administer arcs")
@@ -1495,6 +1504,94 @@ def cmd_arcs_suggest(args: argparse.Namespace) -> int:
     if args.apply:
         applied = _apply_arc_suggestions(vault, args.arc, suggestions)
         print(f"Applied {applied} arc beat suggestion(s) to {args.arc}.")
+    elif args.json:
+        print(json.dumps(suggestions, indent=2, sort_keys=True))
+    else:
+        print(json.dumps(suggestions, indent=2))
+    return 0
+
+
+def _generate_lore_suggestions(
+    vault: Path,
+    episode_id: str | None,
+    provider: str,
+    limit: int = 6,
+) -> list[dict[str, str]]:
+    pack = (vault / "pack.yaml").read_text(encoding="utf-8")
+    show_name = _show_name_from_pack(pack) or vault.name
+    existing = [f.text for f in lore_facts(vault)]
+    existing_line = "; ".join(existing) or "none"
+    episode_context = f"\nEpisode scope: {episode_id}" if episode_id else ""
+    prompt = (
+        f"Suggest up to {limit} new canon facts for {show_name}. "
+        "Return JSON only: an array of objects with key 'fact' (one short sentence each). "
+        f"Do not repeat any of these established facts: {existing_line}.{episode_context}\n\n"
+        f"Current pack:\n{pack}"
+    )
+    suggestion_dir = (vault / "episodes" / episode_id) if episode_id else (vault / "research")
+    suggestion_path = suggestion_dir / "lore-suggestions.md"
+    raw_path = suggestion_dir / "lore-suggestions-raw.md"
+    provider_obj = resolve_provider(provider)
+    try:
+        generation = provider_obj.generate("lore-suggest", "lore", prompt)
+        try:
+            suggestions = _extract_json_array(generation.text)
+        except ValueError:
+            atomic_write_text(raw_path, generation.text + "\n")
+            raise ValueError(f"AI lore suggestion did not return valid JSON. Raw output saved: {raw_path}")
+    except ProviderError as exc:
+        suggestions = _fallback_lore_suggestions(show_name, limit)
+        atomic_write_text(raw_path, f"Provider failed: {exc}\n")
+    suggestions = _normalise_lore_suggestions(suggestions)
+    atomic_write_text(
+        suggestion_path,
+        f"# Lore Suggestions for {show_name}\n\n```json\n{json.dumps(suggestions, indent=2)}\n```\n",
+    )
+    return suggestions
+
+
+def _fallback_lore_suggestions(show_name: str, limit: int) -> list[dict[str, str]]:
+    seeds = [
+        {"fact": f"{show_name} is set in a world where memory is currency."},
+        {"fact": "The founding charter is rewritten by every generation."},
+        {"fact": "The protagonists' guild predates the city by a century."},
+        {"fact": "A locked archive holds the names that must not be spoken."},
+        {"fact": "An eclipse marks every legal succession."},
+        {"fact": "The seer's apprentice never inherits the title."},
+    ]
+    return seeds[: max(1, limit)]
+
+
+def _normalise_lore_suggestions(
+    suggestions: list[dict[str, object]],
+) -> list[dict[str, str]]:
+    cleaned: list[dict[str, str]] = []
+    for entry in suggestions:
+        if not isinstance(entry, dict):
+            continue
+        text = str(entry.get("fact", "")).strip()
+        if text:
+            cleaned.append({"fact": text})
+    return cleaned
+
+
+def _apply_lore_suggestions(
+    vault: Path,
+    suggestions: list[dict[str, str]],
+    source: str,
+) -> int:
+    for entry in suggestions:
+        add_lore_fact(vault, entry["fact"], source=source)
+    return len(suggestions)
+
+
+def cmd_lore_suggest(args: argparse.Namespace) -> int:
+    vault = resolve_vault(args.vault)
+    episode_id = args.episode or _current_episode(vault)
+    suggestions = _generate_lore_suggestions(vault, episode_id, args.provider, limit=args.limit)
+    if args.apply:
+        applied = _apply_lore_suggestions(vault, suggestions, source=episode_id or "manual")
+        print(f"Applied {applied} lore fact suggestion(s).")
     elif args.json:
         print(json.dumps(suggestions, indent=2, sort_keys=True))
     else:
