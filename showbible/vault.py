@@ -639,3 +639,67 @@ def lore_facts(vault: Path) -> list[LoreFact]:
         if text:
             results.append(LoreFact(text=text, source=source, file=canon))
     return results
+
+
+def _canon_path(vault: Path) -> Path:
+    return vault / "lore-bible" / "canon.md"
+
+
+def _lore_line(text: str, source: str) -> str:
+    return f"- **Manual fact** - {text.strip()} *Source: {source.strip() or 'manual'}*"
+
+
+def add_lore_fact(vault: Path, text: str, *, source: str = "manual") -> Path:
+    path = _canon_path(vault)
+    body = path.read_text(encoding="utf-8") if path.exists() else "# Canon\n\n## Facts\n\n"
+    if "## Facts" not in body:
+        body = body.rstrip() + "\n\n## Facts\n\n"
+    body = body.rstrip() + "\n" + _lore_line(text, source) + "\n"
+    atomic_write_text(path, body)
+    return path
+
+
+def update_lore_fact(
+    vault: Path,
+    *,
+    original_text: str,
+    new_text: str,
+    new_source: str,
+) -> Path:
+    path = _canon_path(vault)
+    if not path.exists():
+        raise VaultError("canon.md missing")
+    text = path.read_text(encoding="utf-8")
+    new_body, count = _replace_lore_line(text, original_text, _lore_line(new_text, new_source))
+    if count == 0:
+        raise VaultError(f"lore fact not found: {original_text!r}")
+    atomic_write_text(path, new_body)
+    return path
+
+
+def remove_lore_fact(vault: Path, text: str) -> Path:
+    path = _canon_path(vault)
+    if not path.exists():
+        raise VaultError("canon.md missing")
+    body = path.read_text(encoding="utf-8")
+    new_body, count = _replace_lore_line(body, text, replacement=None)
+    if count == 0:
+        raise VaultError(f"lore fact not found: {text!r}")
+    atomic_write_text(path, new_body)
+    return path
+
+
+def _replace_lore_line(
+    text: str,
+    fact: str,
+    replacement: str | None,
+) -> tuple[str, int]:
+    pattern = re.compile(
+        rf"^-\s*(?:\*\*Manual fact\*\*\s*-\s*)?{re.escape(fact.strip())}(?:\s*\*Source:[^*]*\*)?[ \t]*$",
+        flags=re.MULTILINE,
+    )
+    if replacement is None:
+        new_text, count = pattern.subn("", text)
+        new_text = re.sub(r"\n{3,}", "\n\n", new_text)
+        return new_text, count
+    return pattern.subn(replacement, text)

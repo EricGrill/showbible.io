@@ -791,3 +791,48 @@ def test_lore_facts_parses_canon(tmp_path: Path) -> None:
         ("A bare bullet survives untouched.", "manual"),
     ]
     assert facts[0].file == vault / "lore-bible" / "canon.md"
+
+
+def test_lore_fact_round_trip(tmp_path: Path) -> None:
+    from showbible.vault import add_lore_fact, lore_facts, remove_lore_fact, update_lore_fact
+
+    vault = init_vault(tmp_path / "demo")
+
+    add_lore_fact(vault, "The colony predates the founders.", source="manual")
+    add_lore_fact(vault, "The bell rings only on the equinox.", source="S01E03")
+
+    facts = [(f.text, f.source) for f in lore_facts(vault)]
+    assert ("The colony predates the founders.", "manual") in facts
+    assert ("The bell rings only on the equinox.", "S01E03") in facts
+
+    update_lore_fact(
+        vault,
+        original_text="The colony predates the founders.",
+        new_text="The colony predates every founder.",
+        new_source="S01E04",
+    )
+
+    after_update = [(f.text, f.source) for f in lore_facts(vault)]
+    assert ("The colony predates every founder.", "S01E04") in after_update
+    assert ("The colony predates the founders.", "manual") not in after_update
+
+    remove_lore_fact(vault, "The bell rings only on the equinox.")
+
+    after_remove = [f.text for f in lore_facts(vault)]
+    assert "The bell rings only on the equinox." not in after_remove
+    assert "The colony predates every founder." in after_remove
+
+
+def test_update_lore_fact_preserves_trailing_newline(tmp_path: Path) -> None:
+    from showbible.vault import add_lore_fact, update_lore_fact
+
+    vault = init_vault(tmp_path / "demo")
+    add_lore_fact(vault, "Original fact.", source="manual")
+    update_lore_fact(
+        vault,
+        original_text="Original fact.",
+        new_text="Updated fact.",
+        new_source="S01E02",
+    )
+    text = (vault / "lore-bible" / "canon.md").read_text(encoding="utf-8")
+    assert text.endswith("\n")
