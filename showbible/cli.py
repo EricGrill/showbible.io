@@ -23,6 +23,7 @@ from .vault import (
     CastRole,
     add_arc_beat,
     add_cast_role,
+    add_lore_fact,
     add_episode_cast_role,
     atomic_write_json,
     atomic_write_text,
@@ -523,11 +524,8 @@ def cmd_lore_explain(args: argparse.Namespace) -> int:
 
 def cmd_lore_add(args: argparse.Namespace) -> int:
     vault = resolve_vault(args.vault)
-    canon = vault / "lore-bible" / "canon.md"
-    existing = canon.read_text(encoding="utf-8") if canon.exists() else "# Canon\n\n## Facts\n\n"
-    entry = f"\n- **Manual fact** - {args.fact.strip()} *Source: {args.source}*\n"
-    atomic_write_text(canon, existing.rstrip() + entry)
-    print(f"Added lore fact to {canon}")
+    path = add_lore_fact(vault, args.fact, source=args.source)
+    print(f"Added lore fact to {path}")
     return 0
 
 
