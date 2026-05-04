@@ -531,11 +531,12 @@ def add_arc_beat(vault: Path, arc_slug: str, episode_id: str, status: str, beat:
     if not path.exists():
         title = arc_slug.replace("-", " ").title()
         atomic_write_text(path, f"# {title}\n\n")
-    body = path.read_text(encoding="utf-8").rstrip()
+    body = path.read_text(encoding="utf-8")
     if "## Episode Beats" not in body:
-        body += "\n\n## Episode Beats\n"
-    body = body.rstrip() + "\n" + _arc_line(episode_id, status, beat) + "\n"
-    atomic_write_text(path, body)
+        body = body.rstrip() + "\n\n## Episode Beats\n\n"
+    elif not body.endswith("\n"):
+        body += "\n"
+    atomic_write_text(path, body + _arc_line(episode_id, status, beat) + "\n")
     return path
 
 
@@ -579,8 +580,8 @@ def _replace_arc_line(
     replacement: str | None,
 ) -> tuple[str, int]:
     pattern = re.compile(
-        rf"^-\s*{re.escape(episode_id.upper())}\s+\[[^\]]+\]\s+{re.escape(beat.strip())}\s*$",
-        flags=re.IGNORECASE | re.MULTILINE,
+        rf"^-\s*(?i:{re.escape(episode_id.upper())})\s+\[[^\]]+\]\s+{re.escape(beat.strip())}[ \t]*$",
+        flags=re.MULTILINE,
     )
     if replacement is None:
         new_text, count = pattern.subn("", text)

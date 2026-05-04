@@ -731,3 +731,40 @@ def test_arc_beat_round_trip(tmp_path: Path) -> None:
     season = (vault / "arcs" / "season-theme.md").read_text(encoding="utf-8")
     assert "# Season Theme" in season
     assert "## Episode Beats" in season
+
+
+def test_update_arc_beat_is_case_sensitive_on_text(tmp_path: Path) -> None:
+    from showbible.vault import VaultError, add_arc_beat, update_arc_beat
+
+    vault = init_vault(tmp_path / "demo")
+    add_arc_beat(vault, "season-theme", "S01E01", "planned", "open the season")
+
+    # Wrong-cased beat text must NOT silently match.
+    with pytest.raises(VaultError):
+        update_arc_beat(
+            vault,
+            arc_slug="season-theme",
+            episode_id="S01E01",
+            original_beat="OPEN THE SEASON",
+            new_episode_id="S01E01",
+            new_status="done",
+            new_beat="open the season",
+        )
+
+
+def test_update_arc_beat_preserves_trailing_newline(tmp_path: Path) -> None:
+    from showbible.vault import add_arc_beat, update_arc_beat
+
+    vault = init_vault(tmp_path / "demo")
+    add_arc_beat(vault, "ensemble", "S01E01", "planned", "introduce the rival")
+    update_arc_beat(
+        vault,
+        arc_slug="ensemble",
+        episode_id="S01E01",
+        original_beat="introduce the rival",
+        new_episode_id="S01E02",
+        new_status="done",
+        new_beat="rival becomes the partner",
+    )
+    text = (vault / "arcs" / "ensemble.md").read_text(encoding="utf-8")
+    assert text.endswith("\n")
