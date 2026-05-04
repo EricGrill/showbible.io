@@ -8,8 +8,13 @@ from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.widgets import Footer, Static
 
+from showbible.tui.panes.arc import ArcPane
 from showbible.tui.panes.base import BasePane
+from showbible.tui.panes.cast import CastPane
 from showbible.tui.panes.episodes import EpisodeSelected, EpisodesPane
+from showbible.tui.panes.lore import LorePane
+from showbible.tui.panes.outputs import OutputsPane
+from showbible.tui.panes.run_detail import RunDetailPane
 from showbible.tui.runs import RunRegistry
 from showbible.tui.state import AppState
 from showbible.tui.widgets.sidebar import Sidebar, SidebarSelection
@@ -26,6 +31,14 @@ class ShowBibleApp(App):
         Binding("q", "quit", "Quit"),
         Binding("ctrl+r", "refresh", "Refresh"),
     ]
+
+    PANE_FACTORIES = {
+        "episodes": EpisodesPane,
+        "cast": CastPane,
+        "arc": ArcPane,
+        "lore": LorePane,
+        "outputs": OutputsPane,
+    }
 
     state: reactive[AppState] = reactive(None, init=False)
 
@@ -74,8 +87,38 @@ class ShowBibleApp(App):
         self._tick()
 
     def on_sidebar_selection(self, message: SidebarSelection) -> None:
-        if message.section == "command" and message.key == "quit":
+        if message.section == "command":
+            self._handle_command(message.key)
+            return
+        if message.section == "nav":
+            factory = self.PANE_FACTORIES.get(message.key)
+            if factory is not None:
+                self._mount_pane(factory())
+            return
+        if message.section == "run":
+            self._mount_pane(RunDetailPane(message.key))
+
+    def _handle_command(self, key: str) -> None:
+        if key == "quit":
             self.exit(0)
+        elif key == "snapshot":
+            from showbible.tui.screens.snapshot import SnapshotScreen
+            self.push_screen(SnapshotScreen())
+        elif key == "doctor":
+            from showbible.tui.screens.doctor import DoctorScreen
+            self.push_screen(DoctorScreen())
+        elif key == "run":
+            self._dispatch_run()
+
+    def _dispatch_run(self) -> None:
+        # Replaced in Task 30 (Run worker).
+        self.notify("Run dispatch wired in Task 30.")
+
+    def _mount_pane(self, pane) -> None:
+        content = self.query_one("#content", Vertical)
+        content.remove_children()
+        content.mount(pane)
+        pane.refresh_from_state(self.state)
 
     def on_episode_selected(self, message: EpisodeSelected) -> None:
         self.state = self.state.with_episode(message.episode_id)

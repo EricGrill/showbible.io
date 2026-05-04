@@ -44,7 +44,7 @@ class OutputsPane(BasePane):
         self._list.clear_options()
         for art in self._artifacts:
             marker = "✓ " if art["exists"] else "· "
-            self._list.add_option(Option(f"{marker}{art['name']}", id=art["name"]))
+            self._list.add_option(Option(f"{marker}{art['label']}", id=art["id"]))
         self._render_preview(state)
 
     def _render_preview(self, state) -> None:
@@ -53,9 +53,9 @@ class OutputsPane(BasePane):
             self._preview.update("Select an output.")
             return
         art = self._artifacts[idx]
-        path = state.vault / "episodes" / state.current_episode / art["name"]
+        path = state.vault / "episodes" / state.current_episode / art["path"]
         if not path.exists():
-            self._preview.update(f"(not yet generated: {art['name']})")
+            self._preview.update(f"(not yet generated: {art['label']})")
             return
         text = path.read_text(encoding="utf-8")
         self._preview.update(Markdown(text))
@@ -71,7 +71,7 @@ class OutputsPane(BasePane):
         if idx >= len(self._artifacts):
             return
         art = self._artifacts[idx]
-        path = self.app.state.vault / "episodes" / self.app.state.current_episode / art["name"]
+        path = self.app.state.vault / "episodes" / self.app.state.current_episode / art["path"]
         editor = os.environ.get("EDITOR", "vi")
         with self.app.suspend():
             try:
