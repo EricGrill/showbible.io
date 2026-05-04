@@ -966,9 +966,10 @@ def test_lore_suggest_falls_back_when_provider_fails(
 
 def test_app_state_refresh_from_disk(tmp_path: Path) -> None:
     from showbible.tui.state import AppState
-    from showbible.vault import add_arc_beat, add_lore_fact
+    from showbible.vault import add_arc_beat, add_lore_fact, ensure_episode
 
     vault = init_vault(tmp_path / "demo", show_name="Demo Show")
+    ensure_episode(vault, "S01E01")
     add_arc_beat(vault, "season-theme", "S01E01", "planned", "open the season")
     add_lore_fact(vault, "The colony predates the founders.", source="S01E01")
 

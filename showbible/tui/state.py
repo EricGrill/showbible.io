@@ -12,7 +12,6 @@ from showbible.vault import (
     arc_beats,
     doctor,
     effective_cast_roles,
-    ensure_episode,
     list_episodes,
     lore_facts,
     read_json,
@@ -54,7 +53,6 @@ class AppState:
         show_name = self.vault.name
         if pack_path.exists():
             show_name = _show_name_from_pack(pack_path.read_text(encoding="utf-8")) or self.vault.name
-        ensure_episode(self.vault, self.current_episode)
         return replace(
             self,
             show_name=show_name,
