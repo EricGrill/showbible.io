@@ -1,123 +1,62 @@
 # ShowBible
 
-ShowBible is a local-first AI writers room framework. It stores show packs,
-episode outputs, transcripts, lore, and runtime state in a git-friendly
-markdown vault.
+**ShowBible is a local-first AI "writers room" framework for episodic television and
+screenwriting.** It drives a language model through a structured, multi-phase
+episode-writing pipeline while keeping everything — the show pack, cast, lore, story
+arcs, generated drafts, transcripts, and runtime state — in a plain, git-friendly
+markdown vault on your disk. No cloud database, no lock-in: the vault is just files you
+can read, edit, diff, and commit.
 
-This repository currently contains the first v0 vertical slice:
+> **Status:** v0 alpha (a working vertical slice). The pipeline, CLI, terminal UI, and
+> local web UI are functional against a local model or a deterministic mock. Remote
+> provider hooks (Anthropic/OpenAI/Ollama) are stubs, and cost tracking currently
+> records `$0.00`. See [Limitations](./docs/architecture.md#limitations).
 
-- `showbible init <path>` scaffolds a vault.
-- `showbible run --provider mock` generates a deterministic episode pipeline.
-- `showbible workflow` / `showbible tui` guide first-episode setup.
-- `showbible status`, `doctor`, `transcript`, `lore`, `arcs`, and `cost`
-  inspect the vault.
-- `showbible attach` serves a loopback-only web UI from the Python package.
-- The default provider is LM Studio at `http://127.0.0.1:1234` using
-  `google/gemma-4-e4b`; pass `--provider mock` for deterministic local tests.
-  Override with `LMSTUDIO_BASE_URL`, `LMSTUDIO_MODEL`, or
-  `LMSTUDIO_MAX_TOKENS`.
-
-## Development
+## Quick start
 
 ```bash
+# Install (editable, into a virtualenv)
 python3 -m venv .venv
 .venv/bin/python -m pip install -e .
-.venv/bin/python -m pip install pytest
-.venv/bin/python -m pytest
-.venv/bin/showbible --help
+
+# Scaffold a vault and generate a first episode (no model needed with --provider mock)
+.venv/bin/showbible init Sopranos --from "The Sopranos"
+cd Sopranos
+showbible run --episode S01E01 --provider mock
+showbible status
 ```
 
-## Smoke Run
+To use a real local model, start [LM Studio](https://lmstudio.ai/) and drop
+`--provider mock`. The install exposes two equivalent commands: **`showbible`** and
+**`bible`**.
 
-```bash
-.venv/bin/showbible init /tmp/showbible-demo
-.venv/bin/showbible run --vault /tmp/showbible-demo --episode S01E01 --provider mock
-.venv/bin/showbible status --vault /tmp/showbible-demo
-.venv/bin/showbible attach --vault /tmp/showbible-demo --once
-```
+→ Full walkthrough in [Getting started](./docs/getting-started.md).
 
-## CLI-Only Show Dashboard
+## Documentation
 
-For the minimum first-episode path, start the persistent dashboard:
+| Doc | What's inside |
+|---|---|
+| [Getting started](./docs/getting-started.md) | Install, scaffold a vault, generate a first episode |
+| [Core concepts](./docs/concepts.md) | Vault, pack, people, cast, arcs, lore, scope |
+| [The episode pipeline](./docs/pipeline.md) | The six phases, diagram, resumability, interventions |
+| [Interfaces](./docs/interfaces.md) | CLI, terminal UI, and local web UI |
+| [Command reference](./docs/cli-reference.md) | Every command, flag, and exit code |
+| [Providers & configuration](./docs/providers.md) | LM Studio, mock, env vars, fallbacks, adding a provider |
+| [Vault layout](./docs/vault-layout.md) | On-disk structure and key files |
+| [Architecture](./docs/architecture.md) | Module map, data flow, extension points, limitations |
+| [Development](./docs/development.md) | Setup, tests, smoke run, conventions |
 
-```bash
-cd /tmp/showbible-demo
-showbible tui --episode S01E01
-```
+## What it does, in one minute
 
-The dashboard stays open until you press `q`. From there you can create or
-select episodes, add show-level cast, add episode cast overrides, apply AI cast
-suggestions, add arc beats, add lore facts, run the selected episode, and run
-doctor. Running an episode opens a live phase screen so you can see the current
-phase, skipped/completed phases, and model-wait status instead of staring at a
-silent terminal. `View/edit outputs` opens the selected episode's pitch, beats,
-drafts, script, callbacks, and transcript files in the TUI. `showbible workflow
---episode S01E01 --no-tui` prints the same minimum checklist for scripts and
-noninteractive shells.
+`showbible run` walks an episode through six phases — **pitch → break → fast-draft →
+room-pass → polish → continuity-check** — calling the model once per phase and writing
+a real artifact each time (`pitch.md`, `beats.md`, drafts, `script.md`,
+`callbacks.yaml`). Runs are resumable (existing artifacts are skipped) and steerable
+with producer notes and per-character `--speak-as` interventions. The same vault is
+reachable from the CLI, a Textual terminal dashboard, and a loopback-only web UI.
 
-The web UI exposes the same episode output artifacts as tabs with an editor and
-Save button:
+See [the pipeline](./docs/pipeline.md) for the full flow diagram.
 
-```bash
-showbible attach --vault /tmp/showbible-demo --port 8765
-```
+## License
 
-The lower-level commands are still available when you want direct CLI control:
-
-```bash
-cd /tmp/showbible-demo
-showbible cast list
-showbible cast add "Patrick Stewart" --kind actor --plays picard
-showbible cast suggest
-showbible cast suggest --apply
-showbible pack edit patrick-stewart
-```
-
-Cast commands infer scope from the current folder:
-
-```bash
-cd /tmp/showbible-demo
-showbible cast add "David Chase" --kind showrunner       # show-level pack cast
-
-cd /tmp/showbible-demo/episodes/S01E03
-showbible cast add "Steve Buscemi" --kind director       # episode-only override
-showbible cast suggest --apply                           # episode-only AI suggestions
-showbible cast add --show "Edie Falco" --kind actor      # force show-level from episode cwd
-showbible cast add --episode S01E05 "Guest Star"         # force a specific episode
-```
-
-Discover the administration surface from the CLI:
-
-```bash
-showbible help
-showbible help cast
-showbible help episodes
-showbible help arcs
-showbible help roles
-showbible help lore
-showbible help workflow
-showbible cast kinds
-showbible episode show S01E01
-```
-
-`showbible cast suggest` excludes the current effective cast. In a real terminal
-it opens a picker; use `--json` for scripts, or `--apply` to accept all returned
-suggestions.
-
-Lore is markdown-first:
-
-```bash
-showbible lore
-showbible lore explain
-showbible lore paths
-showbible lore add "Tony owes Junior a debt" --source S01E01
-```
-
-Arcs are command-driven too:
-
-```bash
-showbible arcs
-showbible arcs current --episode S01E01
-showbible arcs add "Pilot establishes the central argument" --episode S01E01
-showbible arcs show season-theme
-```
+MIT © Eric Grill
